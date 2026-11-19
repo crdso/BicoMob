@@ -1,11 +1,15 @@
-import { useEffect, useMemo } from 'react'
-import { Circle, MapContainer, Marker, Polygon, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet'
+import { useEffect } from 'react'
+import { Circle, MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { getBoundary, MUNICIPIO_BBOX } from '../lib/boundary'
 import type { MyPos } from '../lib/geo'
-import { ARAGUATINS_CENTER, type LatLng } from '../lib/places'
+import type { LatLng } from '../lib/places'
 import { iconHtml } from './Icon'
+
+// Sem posição conhecida o mapa abre numa visão geral do mundo; assim que há GPS, origem, destino
+// ou um resultado de busca, ele centraliza ali. Nenhuma cidade é assumida.
+const WORLD_CENTER: LatLng = [15, 0]
+const WORLD_ZOOM = 2
 
 function divIcon(cls: string, html = '', size = 28) {
   return L.divIcon({ className: '', html: `<div class="${cls}">${html}</div>`, iconSize: [size, size], iconAnchor: [size / 2, size / 2] })
@@ -62,38 +66,18 @@ export default function MapPanel(p: MapPanelProps) {
   if (p.picking && p.picked) fitPts = [p.picked]
   else if (pts.length) fitPts = pts
   else if (mePt) fitPts = [mePt]
-  else fitPts = [ARAGUATINS_CENTER]
-
-  const boundary = getBoundary()
-  // Contorno do município só ao escolher um ponto: mostra onde a demo atende.
-  const outline = useMemo(
-    () => (p.picking && boundary ? boundary.polygons.map(([outer]) => outer.map(([lng, lat]) => [lat, lng] as LatLng)) : []),
-    [p.picking, boundary],
-  )
-  const [s, w, n, e] = boundary?.bbox ?? MUNICIPIO_BBOX
+  else fitPts = []
 
   return (
     <div className={`map-wrap ${p.picking ? 'picking' : ''} ${p.className ?? ''}`}>
-      <MapContainer
-        center={ARAGUATINS_CENTER}
-        zoom={14}
-        minZoom={9}
-        maxBounds={[[s - 0.05, w - 0.05], [n + 0.05, e + 0.05]]}
-        maxBoundsViscosity={0.9}
-        zoomControl
-        attributionControl
-        className="map"
-      >
+      <MapContainer center={WORLD_CENTER} zoom={WORLD_ZOOM} minZoom={2} worldCopyJump zoomControl attributionControl className="map">
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           maxZoom={19}
         />
-        <Fit points={fitPts} zoomTo={p.picking ? 14 : 15} />
+        <Fit points={fitPts} zoomTo={15} />
         {p.picking && p.onPick && <Picker onPick={p.onPick} />}
-        {outline.map((ring, i) => (
-          <Polygon key={i} positions={ring} interactive={false} pathOptions={{ color: '#7FFF00', weight: 2, dashArray: '6 8', fillOpacity: 0.03, opacity: 0.7 }} />
-        ))}
         {p.route && p.route.length > 1 && (
           <Polyline
             positions={p.route}

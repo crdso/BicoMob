@@ -1,14 +1,16 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { calculateFare, type Category } from './lib/fare'
-import { loadBoundary } from './lib/boundary'
 import { watchPosition, type MyPos } from './lib/geo'
-import { CENTRO, isIftoZone, type LatLng, type Place } from './lib/places'
+import { samePlace, type LatLng, type Place } from './lib/places'
 import { estimateRoute, fetchRoute, type RouteResult } from './lib/routing'
+
+const KEYS = { profile: 'bicomob:profile:v2', rides: 'bicomob:rides:v2', recents: 'bicomob:recents:v2' }
+const MAX_RECENTS = 6
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000
 
 /** Histórico guardado no navegador: a posição real do GPS é arredondada (~100 m) e sem o nome da rua. */
-function sanitizeRide(r: Ride): Ride {
+export function sanitizeRide(r: Ride): Ride {
   if (r.origin.id !== 'gps') return r
   const rp = (p: LatLng): LatLng => [round3(p[0]), round3(p[1])]
   return {
@@ -20,8 +22,9 @@ function sanitizeRide(r: Ride): Ride {
 
 export type Tab = 'home' | 'services' | 'activity' | 'account'
 export type AccountSub = 'perfil' | 'favoritos' | 'pagamento' | 'notificacoes' | 'seguranca' | 'ajuda'
+export type FavoriteKind = 'home' | 'work'
 export type Screen =
-  | { k: 'search'; focus: 'origin' | 'dest'; pickFavorite?: 'casa' }
+  | { k: 'search'; focus: 'origin' | 'dest'; pickFavorite?: FavoriteKind }
   | { k: 'confirm' }
   | { k: 'ride' }
   | { k: 'receipt'; id: string }
@@ -39,6 +42,7 @@ export interface Driver {
   etaMin: number
 }
 
+// Motoristas FICTÍCIOS, só para a demonstração.
 export const DRIVERS: Record<Category, Driver> = {
   carro: { name: 'João Santos', rating: 4.9, vehicle: 'Fiat Argo', color: 'Branco', plate: 'DEMO-001', etaMin: 4 },
   moto: { name: 'Lucas Almeida', rating: 4.8, vehicle: 'Honda CG 160', color: 'Preta', plate: 'DEMO-002', etaMin: 3 },
@@ -53,7 +57,6 @@ export interface Ride {
   km: number
   minutes: number
   fare: number
-  iftoZone: boolean
   routeSource: RouteResult['source']
   coords: RouteResult['coords']
   status: RideStatus
@@ -66,7 +69,9 @@ export interface Profile {
   payment: 'dinheiro' | 'pix' | 'cartao'
   notifications: { corrida: boolean; promo: boolean; seguranca: boolean }
   theme: 'dark' | 'light'
-  casa: Place
+  /** Favoritos definidos pelo próprio usuário (começam vazios). */
+  home: Place | null
+  work: Place | null
 }
 
 const DEFAULT_PROFILE: Profile = {
@@ -74,7 +79,8 @@ const DEFAULT_PROFILE: Profile = {
   payment: 'dinheiro',
   notifications: { corrida: true, promo: false, seguranca: true },
   theme: 'dark',
-  casa: CENTRO,
+  home: null,
+  work: null,
 }
 
 export type RouteState =
@@ -82,22 +88,18 @@ export type RouteState =
   | { state: 'loading' }
   | { state: 'ready'; data: RouteResult; failed?: boolean }
 
-function loadProfile(): Profile {
+function readJson<T>(key: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem('bicomob:profile')
-    return raw ? { ...DEFAULT_PROFILE, ...JSON.parse(raw) } : DEFAULT_PROFILE
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : fallback
   } catch {
-    return DEFAULT_PROFILE
+    return fallback
   }
 }
-function loadRides(): Ride[] {
-  try {
-    const raw = localStorage.getItem('bicomob:rides')
-    const v = raw ? JSON.parse(raw) : []
-    return Array.isArray(v) ? v : []
-  } catch {
-    return []
-  }
+const loadProfile = (): Profile => ({ ...DEFAULT_PROFILE, ...readJson<Partial<Profile>>(KEYS.profile, {}) })
+const loadArray = <T,>(key: string): T[] => {
+  const v = readJson<unknown>(key, [])
+  return Array.isArray(v) ? (v as T[]) : []
 }
 function readSession(): boolean {
   try { return sessionStorage.getItem('bicomob:session') === '1' } catch { return false }
@@ -112,6 +114,8 @@ interface Store {
   rides: Ride[]
   clearRides(): void
   rateRide(id: string, rating: number): void
+  recents: Place[]
+  addRecent(p: Place): void
   tab: Tab
   setTab(t: Tab): void
   stack: Screen[]
@@ -120,7 +124,7 @@ interface Store {
   goHome(): void
   origin: Place | null
   dest: Place | null
-  /** Posição real (só em memória) enquanto o usuário permitir; usada para o ponto azul no mapa. */
+  /** Posição real (só em memória) enquanto o usuário permitir; usada para o ponto azul e para priorizar buscas. */
   me: MyPos | null
   setMe(p: MyPos | null): void
   setOrigin(p: Place | null): void
@@ -131,7 +135,6 @@ interface Store {
   route: RouteState
   loadRoute(): void
   prices: Record<Category, number> | null
-  iftoZone: boolean
   activeRide: Ride | null
   requestRide(): void
   advanceRide(s: RideStatus): void
@@ -148,10 +151,11 @@ export const useStore = () => useContext(Ctx)
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [logged, setLogged] = useState(readSession)
   const [profile, setProfileState] = useState<Profile>(loadProfile)
-  const [rides, setRides] = useState<Ride[]>(loadRides)
+  const [rides, setRides] = useState<Ride[]>(() => loadArray<Ride>(KEYS.rides))
+  const [recents, setRecents] = useState<Place[]>(() => loadArray<Place>(KEYS.recents))
   const [tab, setTab] = useState<Tab>('home')
   const [stack, setStack] = useState<Screen[]>([])
-  // Sem origem até o usuário escolher: nunca fingimos que ele está no Centro.
+  // Sem origem até o usuário escolher ou autorizar a localização: nunca fingimos uma posição.
   const [origin, setOriginState] = useState<Place | null>(null)
   const [dest, setDestState] = useState<Place | null>(null)
   const [me, setMe] = useState<MyPos | null>(null)
@@ -161,15 +165,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<string | null>(null)
   const toastTimer = useRef<number>()
 
+  // Limpa dados de versões anteriores do app guardados neste navegador (qualquer chave `bicomob:` que não seja atual).
   useEffect(() => {
-    try { localStorage.setItem('bicomob:profile', JSON.stringify(profile)) } catch { /* sem storage */ }
-  }, [profile])
-  useEffect(() => {
-    try { localStorage.setItem('bicomob:rides', JSON.stringify(rides)) } catch { /* sem storage */ }
-  }, [rides])
-
-  // Limite municipal real (OSM). Em cache no navegador depois da primeira vez.
-  useEffect(() => { void loadBoundary() }, [])
+    try {
+      const current = new Set<string>(Object.values(KEYS))
+      for (const k of Object.keys(localStorage)) if (k.startsWith('bicomob:') && !current.has(k)) localStorage.removeItem(k)
+    } catch { /* sem storage */ }
+  }, [])
+  useEffect(() => { try { localStorage.setItem(KEYS.profile, JSON.stringify(profile)) } catch { /* sem storage */ } }, [profile])
+  useEffect(() => { try { localStorage.setItem(KEYS.rides, JSON.stringify(rides)) } catch { /* sem storage */ } }, [rides])
+  useEffect(() => { try { localStorage.setItem(KEYS.recents, JSON.stringify(recents)) } catch { /* sem storage */ } }, [recents])
 
   // Depois que o usuário autorizou a localização, mantém o ponto azul atualizado (só em memória).
   const watching = me !== null
@@ -196,6 +201,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     resetRoute()
   }
 
+  // Recentes: só destinos que o usuário escolheu (nunca a posição do GPS).
+  const addRecent = useCallback((p: Place) => {
+    if (p.id === 'gps') return
+    setRecents((rs) => [p, ...rs.filter((r) => !samePlace(r, p))].slice(0, MAX_RECENTS))
+  }, [])
+
   const loadRoute = useCallback(() => {
     if (!dest || !origin) return
     const id = ++reqId.current
@@ -205,15 +216,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .catch(() => { if (id === reqId.current) setRoute({ state: 'ready', data: estimateRoute(origin.position, dest.position), failed: true }) })
   }, [origin, dest])
 
-  const iftoZone = dest && origin ? isIftoZone(origin, dest) : false
   const prices = useMemo(() => {
     if (route.state !== 'ready') return null
     const { km, minutes } = route.data
-    return {
-      moto: calculateFare('moto', km, minutes, iftoZone),
-      carro: calculateFare('carro', km, minutes, iftoZone),
-    }
-  }, [route, iftoZone])
+    return { moto: calculateFare('moto', km, minutes), carro: calculateFare('carro', km, minutes) }
+  }, [route])
 
   const requestRide = () => {
     if (!dest || !origin || route.state !== 'ready' || !prices) return
@@ -224,7 +231,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       origin, dest, category,
       km: r.km, minutes: r.minutes,
       fare: prices[category],
-      iftoZone, routeSource: r.source, coords: r.coords,
+      routeSource: r.source, coords: r.coords,
       status: 'searching',
       driver: DRIVERS[category],
     }
@@ -274,15 +281,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     logout: (clear) => {
       try { sessionStorage.removeItem('bicomob:session') } catch { /* ok */ }
-      if (clear) { setRides([]); setProfileState(DEFAULT_PROFILE) }
+      if (clear) { setRides([]); setRecents([]); setProfileState(DEFAULT_PROFILE) }
       setActiveRide(null); setStack([]); setTab('home'); setDestState(null); setOriginState(null); setMe(null); resetRoute()
       setLogged(false)
     },
     profile,
     setProfile: (p) => setProfileState((x) => ({ ...x, ...p })),
     rides,
-    clearRides: () => setRides([]),
+    clearRides: () => { setRides([]); setRecents([]) },
     rateRide: (id, rating) => setRides((rs) => rs.map((r) => (r.id === id ? { ...r, rating } : r))),
+    recents, addRecent,
     tab, setTab: (t) => { setTab(t); setStack([]) },
     stack,
     push: (s) => setStack((x) => [...x, s]),
@@ -290,7 +298,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     goHome: () => { setStack([]); setTab('home') },
     origin, dest, me, setMe, setOrigin, setDest, swap,
     category, setCategory,
-    route, loadRoute, prices, iftoZone,
+    route, loadRoute, prices,
     activeRide, requestRide, advanceRide, cancelRide, finishRide, repeat,
     toast, showToast,
   }

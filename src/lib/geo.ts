@@ -1,5 +1,5 @@
 import { fetchWithTimeout, throttled, TtlCache } from './net'
-import type { LatLng, Place } from './places'
+import { normalize, type LatLng, type Place } from './places'
 
 // Localização REAL do usuário via API nativa do navegador. A posição fica só em memória:
 // não é gravada no localStorage nem enviada a nenhum serviço, exceto a geocodificação reversa
@@ -52,6 +52,19 @@ export function getCurrentPosition(): Promise<MyPos> {
   })
 }
 
+/**
+ * Estado da permissão de localização SEM disparar o pedido ao usuário.
+ * Só quando já está 'granted' usamos a posição automaticamente (ex.: ao reabrir o app).
+ */
+export async function geolocationPermission(): Promise<'granted' | 'denied' | 'prompt' | 'unknown'> {
+  try {
+    if (geoSupportProblem() || !navigator.permissions?.query) return 'unknown'
+    return (await navigator.permissions.query({ name: 'geolocation' as PermissionName })).state
+  } catch {
+    return 'unknown'
+  }
+}
+
 /** Acompanha a posição (ex.: ponto azul no mapa). Retorna a função que para o acompanhamento. */
 export function watchPosition(onPos: (p: MyPos) => void, onError?: (e: GeoError) => void): () => void {
   if (geoSupportProblem()) return () => {}
@@ -72,6 +85,14 @@ export interface ReverseResult {
   state?: string
 }
 
+/** "Bairro, Cidade, Estado" a partir de um resultado de geocodificação reversa. */
+export function describeArea(rev: ReverseResult | null): string {
+  const seen = new Set<string>()
+  return [rev?.suburb, rev?.city, rev?.state]
+    .filter((p): p is string => !!p && !seen.has(normalize(p)) && !!seen.add(normalize(p)))
+    .join(', ')
+}
+
 const revCache = new TtlCache<ReverseResult | null>(30 * 60 * 1000, 60)
 
 export async function reverseGeocode(pos: LatLng, signal?: AbortSignal): Promise<ReverseResult | null> {
@@ -82,7 +103,7 @@ export async function reverseGeocode(pos: LatLng, signal?: AbortSignal): Promise
     await throttled('nominatim', 1100, signal)
     const res = await fetchWithTimeout(
       `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${pos[0]}&lon=${pos[1]}`,
-      { headers: { 'Accept-Language': 'pt-BR' } },
+      { headers: { 'Accept-Language': navigator.language || 'pt-BR' } },
       8000,
       signal,
     )
@@ -110,7 +131,7 @@ export function placeFromMyPos(pos: MyPos, rev: ReverseResult | null): Place {
   return {
     id: 'gps',
     title: rev?.road ?? 'Sua localização atual',
-    subtitle: ['Sua localização atual', rev?.suburb, `±${acc} m`].filter(Boolean).join(' • '),
+    subtitle: [rev?.road ? 'Sua localização atual' : undefined, describeArea(rev) || undefined, `±${acc} m`].filter(Boolean).join(' • '),
     position: [pos.lat, pos.lng],
     icon: 'gps-fill',
   }

@@ -1,29 +1,21 @@
-# CLAUDE.md — Instruções obrigatórias do projeto BicoMob
+# CLAUDE.md — BicoMob
 
-Você é o agente de desenvolvimento responsável por **implementar e testar** um site DEMO interativo chamado **BicoMob**.
+BicoMob é uma **demonstração interativa** de um aplicativo de mobilidade urbana, inspirada na experiência de apps como o Uber, com identidade própria. **Não é um serviço real de transporte.**
 
-## Leia antes de codificar
+## Regras do projeto
 
-Leia integralmente, nessa ordem: `00_PROMPT_PARA_COLAR_NO_CLAUDE.md`, `01_PRODUTO_E_FLUXO.md`, `02_DESIGN_E_RESPONSIVIDADE.md`, `03_MAPA_ARAGUATINS_E_APIS.md`, `04_TARIFAS_E_SIMULACAO.md`, `05_DADOS_DEMO_E_CONTEUDO.md`, `06_CHECKLIST_E_CRITERIOS.md`, `07_FONTES_E_REFERENCIAS.md`. Inspecione as imagens em `referencias/`.
+1. **Só demo:** sem motoristas, pagamentos, cadastro ou backend de corridas reais. Tudo que simula uma operação (motorista, placa, aceite, chegada, pagamento) deve ser claramente identificado como demonstração.
+2. **Genérico:** nenhuma cidade, região, coordenada, limite geográfico ou taxa regional no código, nos dados, nos testes ou na documentação (`src/lib/project.test.ts` verifica isso).
+3. **Dados geográficos reais:** mapa e busca usam OpenStreetMap (Leaflet, Photon, Nominatim, OSRM). Nunca inventar lugares, ruas ou coordenadas. Se um serviço público cair, informar e manter a opção de escolher o ponto no mapa.
+4. **Localização:** `navigator.geolocation` só com permissão; nunca assumir a posição do usuário. A posição fica em memória e não é enviada a serviços (exceto a coordenada ao Nominatim para o nome da rua).
+5. **Visual:** modo escuro, verde `#7FFF00`, ícones Iconify (`iconify-icon`), veículos como ilustrações SVG próprias, moldura de celular no desktop (430×900) e tela cheia no celular real (≤ 600 px).
+6. **Título da aba:** exatamente `BicoMob`.
+7. **Qualidade:** `npm run build` (inclui typecheck) e `npm test` devem passar antes de qualquer commit. Testar também no navegador, em desktop e mobile.
 
-## Regras invioláveis
+## Comandos
 
-1. Construir **SITE WEB / PWA-like**, não APK, app nativo nem protótipo estático sem interações.
-2. **Desktop:** site exibido DENTRO de um telefone centralizado em página escura. **Mobile real:** layout ocupa a viewport normalmente, SEM moldura de celular.
-3. Cores: fundo preto/grafite e verde principal exatamente `#7FFF00`.
-4. Inspiração visual e hierarquia de produtos de mobilidade como o Uber, porém **branding BicoMob original** (não copiar logotipo, nome, ilustrações proprietárias ou identidade de marca do Uber).
-5. Mapa **de verdade** mostrando Araguatins-TO, incluindo o IFTO no território do município; **não** inventar mapa, polilinha de ruas ou mapa de cidade genérica. A visualização de mapa deve respeitar atribuições de licença.
-6. Busca de lugares e escolha da origem/destino; seleção Moto/Carro; preço calculado; solicitar corrida; motorista fictício aceitar; visualização de perfil, veículo, placa, ETA; acompanhar e finalizar corrida; histórico e conta demo.
-7. **Não usar nenhuma autenticação, banco, API paga, pagamentos reais ou prestador de corridas real.** Nenhum dado pessoal real ou falsa promessa de veículo disponível. Não acionar chamadas/WhatsApp reais na demo.
-8. As telas PNG são **referências visuais**: reconstruir todo texto, cartão, botão, mapa, ícone, navegação e estados como HTML/React interativos; não usar a imagem inteira como plano de fundo clicável.
-9. Priorizar uma implementação utilizável, bonita e estável; não adicionar funções complexas que atrasem a demo.
-10. Em caso de divergência entre a imagem e a regra escrita, **a regra escrita prevalece**, sobretudo preço, mapa, tipografia, acessibilidade, funcionamento e veracidade.
-11. Não pedir decisões adicionais sobre detalhes triviais; use os padrões documentados. Apresente o resultado executado e testado, indicando limitações factuais.
+`npm install` · `npm run dev` · `npm run build` · `npm test` · `npm run icons`
 
-## Stack preferencial
+## Stack
 
-React + TypeScript + Vite; Tailwind CSS ou CSS modular; `lucide-react`; Leaflet + React Leaflet; roteamento simples em estado ou React Router; persistência localStorage. Sem Supabase e sem backend para esse MVP.
-
-## Entrega esperada
-
-Código-fonte completo na pasta de implementação, `README.md` com `npm install` e `npm run dev`, build sem erro, navegação demo funcional, mapa ao menos com tiles OSM reais (se rede disponível), fallback honesto quando serviços externos estiverem indisponíveis, e teste real da versão desktop e mobile.
+React 18 + TypeScript + Vite, CSS próprio, Leaflet/React Leaflet, iconify-icon, localStorage/sessionStorage. Sem backend.

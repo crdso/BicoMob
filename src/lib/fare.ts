@@ -5,24 +5,23 @@ export interface FareConfig {
   perKm: number
   perMinute: number
   minimum: number
-  iftoFee: number
 }
 
-// Valores de SIMULAÇÃO para apresentação (docs/04). Centralizados para fácil ajuste.
+// Valores de SIMULAÇÃO para apresentação. Centralizados para fácil ajuste.
 export const FARE_CONFIG: Record<Category, FareConfig> = {
-  moto: { base: 3.0, perKm: 1.6, perMinute: 0.15, minimum: 7.0, iftoFee: 2.5 },
-  carro: { base: 5.0, perKm: 3.2, perMinute: 0.25, minimum: 13.0, iftoFee: 6.5 },
+  moto: { base: 3.0, perKm: 1.6, perMinute: 0.15, minimum: 7.0 },
+  carro: { base: 5.0, perKm: 3.2, perMinute: 0.25, minimum: 13.0 },
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100
 
-export function calculateFare(category: Category, km: number, minutes: number, isIftoZone: boolean): number {
+/** preço = max(mínimo, base + km × R$/km + min × R$/min), arredondado só no total. */
+export function calculateFare(category: Category, km: number, minutes: number): number {
   if (!Number.isFinite(km) || !Number.isFinite(minutes) || km < 0 || minutes <= 0) {
     throw new RangeError('Distância/duração inválidas')
   }
   const cfg = FARE_CONFIG[category]
-  const raw = cfg.base + km * cfg.perKm + minutes * cfg.perMinute
-  return round2(Math.max(cfg.minimum, raw) + (isIftoZone ? cfg.iftoFee : 0))
+  return round2(Math.max(cfg.minimum, cfg.base + km * cfg.perKm + minutes * cfg.perMinute))
 }
 
 export interface FareLine {
@@ -30,7 +29,7 @@ export interface FareLine {
   value: number
 }
 
-export function fareBreakdown(category: Category, km: number, minutes: number, isIftoZone: boolean): FareLine[] {
+export function fareBreakdown(category: Category, km: number, minutes: number): FareLine[] {
   const cfg = FARE_CONFIG[category]
   const lines: FareLine[] = [
     { label: 'Tarifa base', value: cfg.base },
@@ -39,7 +38,6 @@ export function fareBreakdown(category: Category, km: number, minutes: number, i
   ]
   const raw = cfg.base + km * cfg.perKm + minutes * cfg.perMinute
   if (raw < cfg.minimum) lines.push({ label: `Ajuste à corrida mínima (${brl(cfg.minimum)})`, value: cfg.minimum - raw })
-  if (isIftoZone) lines.push({ label: 'Suplemento Zona IFTO (demo)', value: cfg.iftoFee })
   return lines
 }
 

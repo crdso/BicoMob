@@ -135,7 +135,6 @@ export function HeroScene() {
       </svg>
       <span className="hero-pin"><Icon name="pin-fill" size={30} /></span>
       <CarArt className="hero-car" />
-      <span className="hero-chip">Araguatins</span>
     </div>
   )
 }

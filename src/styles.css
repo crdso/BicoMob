@@ -335,3 +335,12 @@ iconify-icon { display: inline-block; flex: none; vertical-align: middle; color:
 .search-scroll { overflow-x: hidden; }
 .res-txt small { display: block; }
 .res-txt b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; overflow: hidden; line-height: 1.25; }
+
+/* ======================= v3: fluxo genérico (sem cidade) ======================= */
+.promo-art.moto { background: linear-gradient(#1c2a1d, #0f130f 75%); }
+.promo-car.moto-art { width: 70%; right: 6%; }
+.step-hint { display: flex; gap: 8px; align-items: center; margin: 4px 20px 6px; padding: 10px 12px; border-radius: 12px; background: rgba(127, 255, 0, .08); color: var(--primary); font-size: 13px; }
+.center-me { margin-bottom: 10px; }
+.picked-label { align-items: flex-start; } .picked-label span { display: block; min-width: 0; } .picked-label small { display: block; }
+.muted-link { color: var(--muted); }
+.res-txt small { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.3; }

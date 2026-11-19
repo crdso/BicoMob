@@ -12,7 +12,6 @@
   "chevron": "solar:alt-arrow-right-linear",
   "back": "solar:arrow-left-linear",
   "close": "solar:close-circle-linear",
-  "pin": "solar:map-point-linear",
   "pin-fill": "solar:map-point-bold",
   "gps": "solar:gps-linear",
   "gps-fill": "solar:gps-bold",
@@ -61,5 +60,12 @@
   "cat-building": "solar:buildings-2-linear",
   "cat-sports": "solar:basketball-linear",
   "cat-hotel": "solar:bed-linear",
-  "cat-transport": "solar:bus-linear"
+  "cat-transport": "solar:bus-linear",
+  "history": "solar:history-linear",
+  "briefcase": "solar:case-round-linear",
+  "add": "solar:add-circle-linear",
+  "star-line": "solar:star-linear",
+  "calendar": "solar:calendar-linear",
+  "box": "solar:box-linear",
+  "retry": "solar:restart-linear"
 }

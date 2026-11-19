@@ -6,55 +6,11 @@ export type IconKey = keyof typeof iconMap
 export interface Place {
   id: string
   title: string
+  /** Endereço secundário (rua, bairro, cidade, estado). */
   subtitle: string
   position: LatLng
   icon: IconKey
-  curated?: boolean
 }
-
-export const ARAGUATINS_CENTER: LatLng = [-5.6529, -48.1162]
-export const IFTO_POSITION: LatLng = [-5.64520829, -48.07150463]
-export const IFTO_RADIUS_M = 500
-
-export const CENTRO: Place = {
-  id: 'centro',
-  title: 'Centro de Araguatins',
-  subtitle: 'Centro, Araguatins - TO',
-  position: ARAGUATINS_CENTER,
-  icon: 'home',
-  curated: true,
-}
-
-export const IFTO: Place = {
-  id: 'ifto-araguatins',
-  title: 'IFTO Campus Araguatins',
-  subtitle: 'Povoado Santa Teresa, Km 05, Zona Rural, Araguatins - TO',
-  position: IFTO_POSITION,
-  icon: 'cat-graduation',
-  curated: true,
-}
-
-// Coordenadas conferidas no OpenStreetMap para Araguatins - TO.
-export const HOSPITAL: Place = {
-  id: 'hospital-municipal',
-  title: 'Hospital Municipal de Araguatins',
-  subtitle: 'Rua Bartolomeu Bueno da Silva, Centro, Araguatins - TO',
-  position: [-5.6483903, -48.1203369],
-  icon: 'cat-hospital',
-  curated: true,
-}
-
-export const PRACA: Place = {
-  id: 'praca-ancelmo',
-  title: 'Praça Ancelmo Ferreira Guimarães',
-  subtitle: 'Centro, Araguatins - TO',
-  position: [-5.6493276, -48.1230806],
-  icon: 'cat-park',
-  curated: true,
-}
-
-/** Atalhos rápidos exibidos antes de digitar. A pesquisa NÃO se limita a eles. */
-export const SUGGESTED_PLACES: Place[] = [CENTRO, IFTO, HOSPITAL, PRACA]
 
 export function normalize(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
@@ -69,15 +25,12 @@ export function haversineKm(a: LatLng, b: LatLng): number {
   return 2 * R * Math.asin(Math.sqrt(h))
 }
 
-export function isIftoPlace(p: Place): boolean {
-  return p.id === IFTO.id || haversineKm(p.position, IFTO_POSITION) * 1000 <= IFTO_RADIUS_M
-}
-
-/** Suplemento aplicado uma única vez se origem OU destino estiver na zona IFTO. */
-export function isIftoZone(origin: Place, dest: Place): boolean {
-  return isIftoPlace(origin) || isIftoPlace(dest)
-}
-
+/** Dois locais a menos de 30 m são tratados como o mesmo ponto. */
 export function samePlace(a: Place, b: Place): boolean {
   return haversineKm(a.position, b.position) < 0.03
+}
+
+/** Coordenadas válidas (evita NaN e valores fora do globo). */
+export function isValidPosition(p: LatLng): boolean {
+  return Number.isFinite(p[0]) && Number.isFinite(p[1]) && Math.abs(p[0]) <= 90 && Math.abs(p[1]) <= 180
 }

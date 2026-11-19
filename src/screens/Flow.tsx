@@ -3,154 +3,163 @@ import { Avatar, CarArt, MotoArt } from '../components/Art'
 import { Icon } from '../components/Icon'
 import MapPanel from '../components/MapPanel'
 import { PlaceIcon, ScreenHeader, Sheet } from '../components/UI'
-import { insideMunicipio, isBoundaryExact, loadBoundary } from '../lib/boundary'
 import { brl, fareBreakdown, FARE_CONFIG, type Category } from '../lib/fare'
-import { GEO_MESSAGES, getCurrentPosition, GeoError, placeFromMyPos, reverseGeocode, type GeoFailure } from '../lib/geo'
-import { ARAGUATINS_CENTER, normalize, samePlace, SUGGESTED_PLACES, type LatLng, type Place } from '../lib/places'
-import { mergePlaces, searchNominatim, searchPlaces, type SearchOutcome } from '../lib/search'
-import { useStore, type Ride } from '../store'
+import { describeArea, GEO_MESSAGES, geolocationPermission, getCurrentPosition, GeoError, placeFromMyPos, reverseGeocode, type GeoFailure, type MyPos } from '../lib/geo'
+import { normalize, samePlace, type LatLng, type Place } from '../lib/places'
+import { allSourcesFailed, MIN_CHARS, searchPlaces, type SearchOutcome } from '../lib/search'
+import { useStore, type FavoriteKind, type Ride } from '../store'
 
 const PAGE = 8
-const MIN_CHARS = 2
-const DEBOUNCE_MS = 400
-
-type Loc =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'error'; kind: GeoFailure }
-  | { status: 'outside'; city?: string }
+const DEBOUNCE_MS = 350
 
 /* ------------------------------ Busca ------------------------------ */
-export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'origin' | 'dest'; pickFavorite?: 'casa' }) {
-  const { origin, dest, me, setMe, setOrigin, setDest, swap, pop, push, setProfile, profile, showToast } = useStore()
+export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'origin' | 'dest'; pickFavorite?: FavoriteKind }) {
+  const { origin, dest, me, stack, setMe, setOrigin, setDest, swap, pop, push, setProfile, profile, recents, addRecent, showToast } = useStore()
   const [focus, setFocus] = useState(initialFocus)
   const [q, setQ] = useState('')
   const [typed, setTyped] = useState(false)
   const [outcome, setOutcome] = useState<SearchOutcome | null>(null)
   const [searching, setSearching] = useState(false)
+  const [retry, setRetry] = useState(0)
   const [visible, setVisible] = useState(PAGE)
-  const [extra, setExtra] = useState<Place[]>([])
-  const [extraBusy, setExtraBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
-  const [loc, setLoc] = useState<Loc>({ status: 'idle' })
+  const [locating, setLocating] = useState(false)
+  const [geoError, setGeoError] = useState<GeoFailure | null>(null)
   const [picking, setPicking] = useState(false)
-  const [picked, setPicked] = useState<{ pos: LatLng; label: string; checking: boolean } | null>(null)
+  const [picked, setPicked] = useState<{ pos: LatLng; title: string; subtitle: string; checking: boolean } | null>(null)
   const originRef = useRef(origin)
   originRef.current = origin
+  const cameFromConfirm = stack[stack.length - 2]?.k === 'confirm'
 
   const query = q.trim()
   const hasQuery = typed && normalize(query).length >= MIN_CHARS
+  const bias: LatLng | undefined = me ? [me.lat, me.lng] : origin?.position
 
-  // Pesquisa com debounce; cada nova digitação cancela a anterior.
+  /** Segue para o resumo da viagem (ou volta a ele, se viemos de lá editar um ponto). */
+  const proceed = useCallback(() => { if (cameFromConfirm) pop(); else push({ k: 'confirm' }) }, [cameFromConfirm, pop, push])
+
+  // Pesquisa automática enquanto digita: debounce, cancelamento da anterior e resultados progressivos.
   useEffect(() => {
     setVisible(PAGE)
-    setExtra([])
     if (!hasQuery) { setOutcome(null); setSearching(false); return }
     setSearching(true)
     const ctrl = new AbortController()
     const t = setTimeout(async () => {
       try {
-        const near: LatLng = me ? [me.lat, me.lng] : ARAGUATINS_CENTER
-        const res = await searchPlaces(query, { near, signal: ctrl.signal, onUpdate: (o) => { if (!ctrl.signal.aborted) setOutcome(o) } })
+        const res = await searchPlaces(query, { bias, signal: ctrl.signal, onUpdate: (o) => { if (!ctrl.signal.aborted) setOutcome(o) } })
         if (!ctrl.signal.aborted) { setOutcome(res); setSearching(false) }
       } catch (err) {
-        if ((err as Error).name !== 'AbortError') { setOutcome({ places: [], sources: { photon: 'error', overpass: 'error', nominatim: 'skipped' } }); setSearching(false) }
+        if ((err as Error).name !== 'AbortError') { setOutcome({ places: [], sources: { photon: 'error', nominatim: 'error' } }); setSearching(false) }
       }
     }, DEBOUNCE_MS)
     return () => { clearTimeout(t); ctrl.abort() }
-  }, [query, hasQuery, me])
+    // `bias` muda com o GPS: usamos só valores primitivos para não refazer a busca à toa.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, hasQuery, retry, bias?.[0].toFixed(1), bias?.[1].toFixed(1)])
 
-  const localMatches = useMemo(() => {
-    if (!hasQuery) return []
-    const n = normalize(query)
-    return SUGGESTED_PLACES.filter((p) => normalize(`${p.title} ${p.subtitle}`).includes(n))
-  }, [query, hasQuery])
+  const results = outcome?.places ?? []
+  const failed = !!outcome && !searching && allSourcesFailed(outcome)
 
-  const results = useMemo(
-    () => (hasQuery ? mergePlaces([localMatches, outcome?.places ?? [], extra], query, ARAGUATINS_CENTER) : []),
-    [hasQuery, localMatches, outcome, extra, query],
-  )
+  /** Usa a posição REAL do aparelho como partida. Nunca assume uma cidade. */
+  const adoptPosition = useCallback((pos: MyPos): Place | null => {
+    const first = placeFromMyPos(pos, null)
+    setMe(pos)
+    setOrigin(first)
+    reverseGeocode([pos.lat, pos.lng]).then((rev) => {
+      if (rev && originRef.current?.id === 'gps') setOrigin(placeFromMyPos(pos, rev))
+    }).catch(() => {})
+    return first
+  }, [setMe, setOrigin])
 
-  const choose = useCallback((p: Place) => {
-    setMsg(null)
-    if (pickFavorite) { setProfile({ casa: p }); showToast('Casa atualizada'); pop(); return }
-    const other = focus === 'origin' ? dest : origin
-    if (other && samePlace(p, other)) { setMsg('Origem e destino não podem ser o mesmo local.'); return }
-    if (focus === 'origin') { setOrigin(p); setFocus('dest') } else setDest(p)
-    setQ(''); setTyped(false); setOutcome(null); setExtra([])
-  }, [pickFavorite, focus, dest, origin, setProfile, showToast, pop, setOrigin, setDest])
-
-  // "Sua localização atual": posição REAL pelo navegador. Nunca assume o Centro.
-  const useMyLocation = async () => {
-    setMsg(null)
-    setLoc({ status: 'loading' })
+  // `chosenDest` evita ler o destino "antigo" quando ele acabou de ser escolhido nesta mesma interação.
+  const useMyLocation = async (afterwards: 'continue' | 'stay' = 'stay', chosenDest?: Place) => {
+    setMsg(null); setGeoError(null); setLocating(true)
+    const target = chosenDest ?? dest
     try {
       const pos = await getCurrentPosition()
-      await loadBoundary()
-      const here: LatLng = [pos.lat, pos.lng]
-      if (!insideMunicipio(here)) {
-        const rev = await reverseGeocode(here).catch(() => null)
-        setLoc({ status: 'outside', city: rev?.city })
-        return
-      }
-      const first = placeFromMyPos(pos, null)
-      if (dest && samePlace(first, dest)) { setLoc({ status: 'idle' }); setMsg('Você já está no destino escolhido.'); return }
-      setMe(pos)
-      setOrigin(first)
-      setFocus('dest')
-      setLoc({ status: 'idle' })
-      // Nome da rua (geocodificação reversa) — atualiza sem bloquear.
-      reverseGeocode(here).then((rev) => {
-        if (rev && originRef.current?.id === 'gps') setOrigin(placeFromMyPos(pos, rev))
-      }).catch(() => {})
+      const first = adoptPosition(pos)
+      if (target && first && samePlace(first, target)) { setMsg('Você já está no destino escolhido.'); return }
+      if (target) { if (afterwards === 'continue') proceed() } else setFocus('dest')
     } catch (err) {
-      setLoc({ status: 'error', kind: err instanceof GeoError ? err.kind : 'unavailable' })
+      setGeoError(err instanceof GeoError ? err.kind : 'unavailable')
+      setFocus('origin')
+    } finally { setLocating(false) }
+  }
+
+  // Se a localização já foi autorizada antes, a partida é preenchida sozinha ao abrir a busca
+  // (sem novo pedido de permissão). Isso também dá prioridade ao que está perto do usuário.
+  useEffect(() => {
+    if (pickFavorite || originRef.current) return
+    if (me) { adoptPosition(me); return }
+    let alive = true
+    void geolocationPermission().then(async (state) => {
+      if (state !== 'granted' || !alive) return
+      try {
+        const pos = await getCurrentPosition()
+        if (alive && !originRef.current) adoptPosition(pos)
+      } catch { /* sem posição: o usuário escolhe a partida */ }
+    })
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const choose = (p: Place) => {
+    setMsg(null)
+    if (pickFavorite) { setProfile({ [pickFavorite]: p }); showToast(pickFavorite === 'home' ? 'Casa atualizada' : 'Trabalho atualizado'); pop(); return }
+    const other = focus === 'origin' ? dest : origin
+    if (other && samePlace(p, other)) { setMsg('Partida e destino não podem ser o mesmo local.'); return }
+    setQ(''); setTyped(false); setOutcome(null)
+    if (focus === 'origin') {
+      setOrigin(p)
+      if (dest) proceed(); else setFocus('dest')
+    } else {
+      setDest(p)
+      addRecent(p)
+      if (origin) proceed()
+      else void useMyLocation('continue', p) // sem partida: tenta a localização real (com permissão)
     }
   }
 
-  const searchOnOsm = async () => {
-    setExtraBusy(true); setMsg(null)
-    try {
-      const r = await searchNominatim(query)
-      setExtra(r)
-      if (!r.length) setMsg('Não encontramos esse local em Araguatins. Tente outro endereço ou escolha o ponto no mapa.')
-    } catch {
-      setMsg('A busca no OpenStreetMap está indisponível agora. Escolha o ponto no mapa.')
-    } finally { setExtraBusy(false) }
-  }
-
-  const openPicker = () => { setPicking(true); setPicked(null); setMsg(null); void loadBoundary() }
+  const openPicker = () => { setPicking(true); setPicked(null); setMsg(null) }
 
   const onPick = (pos: LatLng) => {
-    if (!insideMunicipio(pos)) { setPicked(null); setMsg('Esse ponto está fora do município de Araguatins. Escolha um ponto dentro do contorno verde.'); return }
     setMsg(null)
-    setPicked({ pos, label: 'Ponto no mapa', checking: true })
+    setPicked({ pos, title: 'Ponto no mapa', subtitle: 'Buscando o endereço…', checking: true })
     reverseGeocode(pos).then((rev) => {
-      setPicked((cur) => (cur && cur.pos === pos ? { pos, label: rev?.road ?? 'Ponto no mapa', checking: false } : cur))
-    }).catch(() => setPicked((cur) => (cur && cur.pos === pos ? { ...cur, checking: false } : cur)))
+      setPicked((cur) => (cur && cur.pos === pos ? { pos, title: rev?.road ?? 'Ponto no mapa', subtitle: describeArea(rev) || 'Ponto escolhido no mapa', checking: false } : cur))
+    }).catch(() => setPicked((cur) => (cur && cur.pos === pos ? { ...cur, subtitle: 'Ponto escolhido no mapa', checking: false } : cur)))
   }
 
   const usePicked = () => {
     if (!picked) return
-    choose({ id: `pin-${picked.pos[0].toFixed(5)}_${picked.pos[1].toFixed(5)}`, title: picked.label, subtitle: 'Ponto escolhido no mapa, Araguatins - TO', position: picked.pos, icon: 'pin-fill' })
+    choose({ id: `pin-${picked.pos[0].toFixed(5)}_${picked.pos[1].toFixed(5)}`, title: picked.title, subtitle: picked.subtitle, position: picked.pos, icon: 'pin-fill' })
     setPicking(false); setPicked(null)
   }
 
+  const centerOnMe = async () => {
+    setMsg(null)
+    try { setMe(await getCurrentPosition()) } catch (err) { setMsg(GEO_MESSAGES[err instanceof GeoError ? err.kind : 'unavailable']) }
+  }
+
   const canConfirm = !!dest && !!origin && !samePlace(origin, dest)
-  const photonDown = hasQuery && outcome?.sources.photon === 'error' && !results.length
-  const shown = results.slice(0, visible)
+  const shown = useMemo(() => results.slice(0, visible), [results, visible])
 
   /* ---- modo: escolher no mapa ---- */
   if (picking) {
+    const hasContext = !!(me || origin || dest)
     return (
       <div className="flow">
         <ScreenHeader title="Escolher no mapa" onBack={() => { setPicking(false); setPicked(null); setMsg(null) }} />
-        <p className="muted pad-x hint">Toque no mapa para marcar o ponto de {pickFavorite ? 'Casa' : focus === 'origin' ? 'partida' : 'destino'}. O contorno verde é o limite de Araguatins.</p>
+        <p className="muted pad-x hint">
+          {hasContext
+            ? `Toque no mapa para marcar o ponto de ${pickFavorite ? (pickFavorite === 'home' ? 'Casa' : 'Trabalho') : focus === 'origin' ? 'partida' : 'destino'}.`
+            : 'Aproxime o zoom até o local desejado e toque para marcar. Se preferir, centralize na sua localização.'}
+        </p>
         <MapPanel picking picked={picked?.pos ?? null} onPick={onPick} className="grow-map" origin={origin?.position} dest={dest?.position} me={me} />
-        {!isBoundaryExact() && <p className="tiny muted pad-x">Limite municipal exato indisponível agora; usando uma área aproximada.</p>}
         <div className="footer">
           {msg && <p className="error-text">{msg}</p>}
-          {picked && <p className="picked-label"><Icon name="pin-fill" size={18} className="primary" /> {picked.checking ? 'Verificando endereço…' : picked.label}</p>}
+          {!me && <button className="pill-btn center-me" onClick={centerOnMe}><Icon name="gps" size={18} /> Centralizar na minha localização</button>}
+          {picked && <p className="picked-label"><Icon name="pin-fill" size={18} className="primary" /><span><b>{picked.title}</b><small>{picked.subtitle}</small></span></p>}
           <button className="cta" disabled={!picked} onClick={usePicked}>Usar este ponto</button>
         </div>
       </div>
@@ -161,16 +170,17 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
     if (focus === which && typed) return q
     return which === 'origin' ? origin?.title ?? '' : dest?.title ?? ''
   }
+  const needsOrigin = !pickFavorite && !origin
 
   return (
     <div className="flow">
-      <ScreenHeader title={pickFavorite ? 'Endereço de Casa' : 'Seu trajeto'} onBack={pop} />
+      <ScreenHeader title={pickFavorite ? (pickFavorite === 'home' ? 'Endereço de Casa' : 'Endereço do Trabalho') : 'Seu trajeto'} onBack={pop} />
 
       <div className="search-card">
         {pickFavorite ? (
           <div className="field-row">
             <span className="field-ic"><Icon name="search" size={20} /></span>
-            <input className="field active" aria-label="Buscar local" placeholder="Buscar rua, bairro ou local" value={q} autoFocus
+            <input className="field active" aria-label="Buscar endereço" placeholder="Buscar rua, bairro ou local" value={q} autoFocus
               onChange={(e) => { setQ(e.target.value); setTyped(true) }} />
           </div>
         ) : (
@@ -185,55 +195,85 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
               />
               <input
                 className={`field ${focus === 'dest' ? 'active' : ''}`} aria-label="Para onde?" placeholder="Para onde?"
-                value={fieldValue('dest')}
+                value={fieldValue('dest')} autoFocus={initialFocus === 'dest'}
                 onFocus={(e) => { setFocus('dest'); setQ(''); setTyped(false); e.target.select() }}
                 onChange={(e) => { setQ(e.target.value); setTyped(true) }}
               />
             </div>
-            <button className="icon-btn swap" aria-label="Inverter origem e destino" disabled={!origin || !dest} onClick={swap}><Icon name="swap" size={22} /></button>
+            <button className="icon-btn swap" aria-label="Inverter partida e destino" disabled={!origin || !dest} onClick={swap}><Icon name="swap" size={22} /></button>
           </div>
         )}
       </div>
 
       <div className="scroll search-scroll">
+        {needsOrigin && dest && !geoError && !locating && (
+          <p className="step-hint"><Icon name="info" size={18} /> Falta só a partida: use sua localização ou escolha no mapa.</p>
+        )}
+
         {/* Ações rápidas */}
-        {!pickFavorite && focus === 'origin' && (
-          <button className="quick-row" onClick={useMyLocation} disabled={loc.status === 'loading'}>
-            <span className="quick-ic gps"><Icon name={loc.status === 'loading' ? 'loader' : 'gps-fill'} size={22} className={loc.status === 'loading' ? 'spin' : ''} /></span>
-            <span className="quick-txt"><b>Sua localização atual</b><small>{loc.status === 'loading' ? 'Obtendo sua posição…' : 'Usar o GPS deste aparelho'}</small></span>
+        {!pickFavorite && (focus === 'origin' || needsOrigin) && (
+          <button className="quick-row" onClick={() => useMyLocation('continue')} disabled={locating}>
+            <span className="quick-ic gps"><Icon name={locating ? 'loader' : 'gps-fill'} size={22} className={locating ? 'spin' : ''} /></span>
+            <span className="quick-txt"><b>Sua localização atual</b><small>{locating ? 'Obtendo sua posição…' : 'Usar o GPS deste aparelho'}</small></span>
           </button>
         )}
-        {loc.status === 'error' && (
-          <div className="alert-box" role="alert"><Icon name="alert" size={20} /><span>{GEO_MESSAGES[loc.kind]}</span></div>
-        )}
-        {loc.status === 'outside' && (
-          <div className="alert-box" role="alert"><Icon name="alert" size={20} />
-            <span>Você parece estar fora de Araguatins{loc.city ? ` (em ${loc.city})` : ''}. O BicoMob demonstra corridas só dentro do município. Escolha um ponto em Araguatins para experimentar.</span></div>
-        )}
+        {geoError && <div className="alert-box" role="alert"><Icon name="alert" size={20} /><span>{GEO_MESSAGES[geoError]}</span></div>}
         <button className="quick-row" onClick={openPicker}>
           <span className="quick-ic"><Icon name="crosshair" size={22} /></span>
-          <span className="quick-txt"><b>Escolher no mapa</b><small>Toque em qualquer ponto de Araguatins</small></span>
+          <span className="quick-txt"><b>Escolher no mapa</b><small>Toque em qualquer ponto</small></span>
           <Icon name="chevron" size={20} className="muted" />
         </button>
         {msg && <p className="error-text pad-x">{msg}</p>}
 
-        {/* Sugestões (sem digitar) */}
-        {!hasQuery && (
+        {/* Antes de digitar: favoritos e recentes */}
+        {!hasQuery && !pickFavorite && (
           <>
-            <h3 className="mini-title">Sugestões</h3>
+            <h3 className="mini-title">Favoritos</h3>
             <ul className="results">
-              {[...(profile.casa.id !== 'centro' ? [profile.casa] : []), ...SUGGESTED_PLACES].map((p) => (
-                <li key={p.id}><PlaceRow p={p} onClick={() => choose(p)} /></li>
-              ))}
+              {(['home', 'work'] as const).map((k) => {
+                const fav = profile[k]
+                const label = k === 'home' ? 'Casa' : 'Trabalho'
+                return (
+                  <li key={k}>
+                    {fav ? (
+                      <button className="result" onClick={() => choose(fav)}>
+                        <span className="res-ic"><Icon name={k === 'home' ? 'home-fill' : 'briefcase'} size={22} /></span>
+                        <span className="res-txt"><b>{label}</b><small>{fav.title}{fav.subtitle ? ` • ${fav.subtitle}` : ''}</small></span>
+                      </button>
+                    ) : (
+                      <button className="result" onClick={() => push({ k: 'search', focus: 'dest', pickFavorite: k })}>
+                        <span className="res-ic"><Icon name="add" size={22} /></span>
+                        <span className="res-txt"><b>Adicionar {label}</b><small>Defina um endereço para acesso rápido</small></span>
+                      </button>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
-            <p className="hint pad-x tiny">Digite o nome de uma rua, bairro ou estabelecimento (ex.: “escola”, “Avenida Araguaia”, “farmácia”).</p>
+            {recents.length > 0 && (
+              <>
+                <h3 className="mini-title">Recentes</h3>
+                <ul className="results">
+                  {recents.map((p) => (
+                    <li key={p.id}>
+                      <button className="result" onClick={() => choose(p)}>
+                        <span className="res-ic"><Icon name="history" size={22} /></span>
+                        <span className="res-txt"><b>{p.title}</b><small>{p.subtitle}</small></span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <p className="hint pad-x tiny">Digite uma rua, bairro, estabelecimento ou endereço completo. As sugestões aparecem enquanto você digita.</p>
           </>
         )}
+        {!hasQuery && pickFavorite && <p className="hint pad-x tiny">Digite o endereço que deseja salvar.</p>}
 
         {/* Resultados */}
         {hasQuery && (
           <>
-            <h3 className="mini-title">{searching ? (results.length ? `Resultados para “${query}” • buscando mais…` : 'Buscando em Araguatins…') : `Resultados para “${query}”`}</h3>
+            <h3 className="mini-title">{searching ? (results.length ? 'Resultados • buscando mais…' : 'Buscando…') : 'Resultados'}</h3>
             {searching && !results.length && (
               <ul className="results" aria-busy="true">{[0, 1, 2, 3].map((i) => <li key={i}><div className="skeleton" /></li>)}</ul>
             )}
@@ -243,25 +283,23 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
             {results.length > visible && (
               <button className="more-btn" onClick={() => setVisible((v) => v + PAGE)}>Mostrar mais resultados ({results.length - visible})</button>
             )}
-            {!searching && !results.length && (
+            {failed && (
+              <div className="no-results" role="alert">
+                <Icon name="alert" size={30} />
+                <b>Busca indisponível no momento</b>
+                <small>Os serviços públicos de mapas não responderam. Tente de novo ou escolha o ponto direto no mapa.</small>
+                <button className="pill-btn" onClick={() => setRetry((n) => n + 1)}><Icon name="retry" size={18} /> Tentar novamente</button>
+              </div>
+            )}
+            {!searching && !failed && !results.length && (
               <div className="no-results">
                 <Icon name="search" size={30} />
-                <b>{photonDown ? 'Busca online indisponível' : 'Nenhum resultado em Araguatins'}</b>
-                <small>{photonDown
-                  ? 'Não foi possível consultar o mapa agora. Escolha o ponto diretamente no mapa.'
-                  : 'Não encontramos esse local em Araguatins. Tente um endereço diferente ou escolha no mapa.'}</small>
+                <b>Nenhum resultado</b>
+                <small>Não encontramos “{query}”. Tente outro nome ou endereço, ou escolha o ponto no mapa.</small>
               </div>
             )}
-            {!searching && (
-              <div className="more-actions">
-                <button className="pill-btn" onClick={searchOnOsm} disabled={extraBusy}>
-                  <Icon name={extraBusy ? 'loader' : 'search'} size={18} className={extraBusy ? 'spin' : ''} /> Buscar também no OpenStreetMap
-                </button>
-                <button className="pill-btn" onClick={openPicker}><Icon name="crosshair" size={18} /> Escolher no mapa</button>
-              </div>
-            )}
-            {outcome && outcome.sources.overpass === 'error' && outcome.sources.photon === 'ok' && (
-              <p className="tiny muted pad-x">Lista de estabelecimentos (Overpass) indisponível no momento; mostrando os demais resultados.</p>
+            {!searching && (failed || !results.length) && (
+              <div className="more-actions"><button className="pill-btn" onClick={openPicker}><Icon name="crosshair" size={18} /> Escolher no mapa</button></div>
             )}
           </>
         )}
@@ -269,8 +307,8 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
 
       {!pickFavorite && (
         <div className="footer">
-          <button className="cta" disabled={!canConfirm} onClick={() => push({ k: 'confirm' })}>
-            {canConfirm ? 'Confirmar trajeto' : !origin ? 'Escolha o ponto de partida' : !dest ? 'Escolha o destino' : 'Confirmar trajeto'}
+          <button className="cta" disabled={!canConfirm} onClick={proceed}>
+            {canConfirm ? 'Confirmar trajeto' : !dest && !origin ? 'Escolha o destino' : !origin ? 'Defina a partida' : !dest ? 'Escolha o destino' : 'Confirmar trajeto'}
           </button>
         </div>
       )}
@@ -289,7 +327,7 @@ function PlaceRow({ p, onClick }: { p: Place; onClick: () => void }) {
 
 /* ------------------------------ Confirmar / preço ------------------------------ */
 export function ConfirmScreen() {
-  const { origin, dest, me, route, loadRoute, prices, iftoZone, category, setCategory, pop, push, requestRide, swap } = useStore()
+  const { origin, dest, me, route, loadRoute, prices, category, setCategory, pop, push, requestRide, swap } = useStore()
   const [showBreak, setShowBreak] = useState(false)
 
   useEffect(() => { if (dest && origin && route.state === 'idle') loadRoute() }, [dest, origin, route.state, loadRoute])
@@ -298,7 +336,7 @@ export function ConfirmScreen() {
     return (
       <div className="flow"><ScreenHeader title="Confirmar trajeto" onBack={pop} />
         <div className="empty"><Icon name="pin-fill" size={40} /><b>Escolha partida e destino</b>
-          <button className="cta" onClick={() => push({ k: 'search', focus: origin ? 'dest' : 'origin' })}>{origin ? 'Para onde?' : 'Escolher partida'}</button></div></div>
+          <button className="cta" onClick={() => push({ k: 'search', focus: origin ? 'dest' : 'origin' })}>{origin ? 'Para onde?' : 'Definir partida'}</button></div></div>
     )
   }
 
@@ -311,7 +349,7 @@ export function ConfirmScreen() {
   const card = (c: Category, name: string, desc: string, art: JSX.Element) => (
     <button className={`fare-card ${category === c ? 'sel' : ''}`} onClick={() => setCategory(c)} aria-pressed={category === c}>
       <span className="fare-art">{art}</span>
-      <span className="fare-txt"><b>{name}</b><small>{desc}{iftoZone ? ' • inclui taxa IFTO' : ''}</small>{ready && <small>{eta} min</small>}</span>
+      <span className="fare-txt"><b>{name}</b><small>{desc}</small>{ready && <small>{eta} min</small>}</span>
       <b className="fare-price">{prices ? brl(prices[c]) : '—'}</b>
     </button>
   )
@@ -326,7 +364,7 @@ export function ConfirmScreen() {
             <button className="addr-btn" onClick={() => push({ k: 'search', focus: 'origin' })}>{origin.title}</button>
             <button className="addr-btn" onClick={() => push({ k: 'search', focus: 'dest' })}>{dest.title}</button>
           </div>
-          <button className="icon-btn" aria-label="Inverter origem e destino" onClick={swap}><Icon name="swap" size={22} /></button>
+          <button className="icon-btn" aria-label="Inverter partida e destino" onClick={swap}><Icon name="swap" size={22} /></button>
         </div>
 
         <MapPanel origin={origin.position} dest={dest.position} route={data?.coords} routeIsEstimate={est} me={me} className="map-confirm" />
@@ -341,10 +379,10 @@ export function ConfirmScreen() {
             </div>
             <p className="muted tiny pad-x">
               {est
-                ? 'Rota de demonstração — percurso viário indisponível. Distância estimada em linha reta (×1,3); linha tracejada não é um percurso por ruas.'
+                ? 'Rota de demonstração — o serviço de rotas está indisponível. A distância é uma estimativa em linha reta (×1,3) e a linha tracejada não é um percurso por ruas.'
                 : 'Distância e tempo estimados pelo serviço de rotas (OSRM). Podem variar.'}
             </p>
-            {est && <button className="link pad-x" onClick={loadRoute}>Tentar rota viária novamente</button>}
+            {est && <button className="link pad-x" onClick={loadRoute}>Tentar a rota novamente</button>}
           </>
         )}
 
@@ -352,7 +390,7 @@ export function ConfirmScreen() {
         {card('moto', 'Moto', 'Mais rápida', <MotoArt />)}
         {card('carro', 'Carro', 'Mais conforto', <CarArt />)}
         {ready && <button className="link pad-x" onClick={() => setShowBreak(true)}>Como esse preço foi calculado?</button>}
-        <p className="notice"><Icon name="info" size={18} /><span>Tarifa mínima: Moto {brl(FARE_CONFIG.moto.minimum)} • Carro {brl(FARE_CONFIG.carro.minimum)}. Tarifas simuladas para apresentação. Valores não constituem oferta de transporte.</span></p>
+        <p className="notice"><Icon name="info" size={18} /><span>Tarifa mínima: Moto {brl(FARE_CONFIG.moto.minimum)} • Carro {brl(FARE_CONFIG.carro.minimum)}. Valores simulados para demonstração; nenhuma corrida real é solicitada.</span></p>
       </div>
       <div className="footer">
         <button className="cta" disabled={!ready} onClick={requestRide}>
@@ -363,12 +401,12 @@ export function ConfirmScreen() {
       {showBreak && data && (
         <Sheet title={`Preço — ${label}`} onClose={() => setShowBreak(false)}>
           <ul className="break">
-            {fareBreakdown(category, data.km, data.minutes, iftoZone).map((l) => (
+            {fareBreakdown(category, data.km, data.minutes).map((l) => (
               <li key={l.label}><span>{l.label}</span><b>{brl(l.value)}</b></li>
             ))}
             <li className="total"><span>Total</span><b>{brl(prices![category])}</b></li>
           </ul>
-          <p className="muted tiny">preço = max(mínima, base + km × R$/km + min × R$/min) + suplemento IFTO. Arredondado só no total.</p>
+          <p className="muted tiny">preço = max(mínima, base + km × R$/km + min × R$/min). Arredondado só no total.</p>
         </Sheet>
       )}
     </div>
@@ -448,7 +486,7 @@ export function RideScreen() {
       {status === 'enroute' && <div className="eta-chip"><Icon name="clock" size={18} /> Chega em {etaLeft} min <em>(simulado)</em></div>}
       <MapPanel origin={ride.origin.position} dest={ride.dest.position} route={ride.coords} routeIsEstimate={ride.routeSource === 'estimate'}
         vehicle={vehicle} vehicleKind={ride.category} className="map-ride" />
-      <div className="sim-note">Posição do veículo ilustrativa — simulação, não é rastreamento real.</div>
+      <div className="sim-note">Demonstração: motorista e posição do veículo são fictícios.</div>
 
       <div className="bottom-sheet">
         <div className="sheet-handle" />
@@ -483,7 +521,7 @@ export function RideScreen() {
               {status === 'inprogress' && <button className="cta" onClick={doFinish}>Finalizar viagem</button>}
               {status !== 'inprogress' && <button className="btn ghost" onClick={() => setConfirmCancel(true)}>Cancelar</button>}
             </div>
-            <p className="safe"><Icon name="shield-fill" size={18} className="primary" /> Viagem segura com BicoMob (demonstração)</p>
+            <p className="safe"><Icon name="shield-fill" size={18} className="primary" /> Viagem simulada — demonstração do BicoMob</p>
           </>
         )}
       </div>
