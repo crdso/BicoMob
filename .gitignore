@@ -1,0 +1,5 @@
+node_modules
+dist
+.claude
+*.log
+referencias/00_uber_referencia_usuario.png
