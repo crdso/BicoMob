@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Place } from './places'
 import {
-  allSourcesFailed, iconForOsm, mergePlaces, nominatimRowToPlace, photonToPlace, searchPlaces, typeLabel,
+  allSourcesFailed, iconForOsm, mergePlaces, nominatimRowToPlace, photonToPlace, PHOTON_TIMEOUT_MS, searchNominatim, searchPlaces, typeLabel,
   type NominatimRow, type PhotonFeature,
 } from './search'
 
@@ -96,12 +96,18 @@ describe('ordenação e união', () => {
   })
 })
 
-describe('searchPlaces: Photon principal, Nominatim como fallback', () => {
-  it('usa só o Photon quando ele responde, envia o viés de localização e guarda em cache', async () => {
+const sigFetch = (handler: (url: string, init?: RequestInit) => Promise<Response>) => {
+  calls = []
+  vi.stubGlobal('fetch', (url: string, init?: RequestInit) => { calls.push(url); return handler(url, init) })
+}
+const nominatimCalls = () => calls.filter((u) => u.includes('nominatim'))
+
+describe('autocomplete: somente Photon (nunca o Nominatim público)', () => {
+  it('usa o Photon, envia o viés de localização e guarda em cache', async () => {
     mockFetch(() => ok({ features: [feature('Avenida Teste Um', 'Curitiba', 'Paraná', -49.27, -25.43)] }))
     const out = await searchPlaces('avenida teste um', { bias: [-25.4, -49.3] })
     expect(out.places).toHaveLength(1)
-    expect(out.sources).toMatchObject({ photon: 'ok', nominatim: 'skipped' })
+    expect(out.sources).toEqual({ photon: 'ok' })
     expect(calls).toHaveLength(1)
     expect(calls[0]).toContain('photon.komoot.io')
     expect(calls[0]).toContain('lat=-25.4')
@@ -127,29 +133,39 @@ describe('searchPlaces: Photon principal, Nominatim como fallback', () => {
     expect(out.places.map((p) => p.subtitle.split(', ')[0])).toEqual(expect.arrayContaining(['Manaus', 'Porto Alegre', 'Salvador']))
   })
 
-  it('se o Photon falhar, consulta o Nominatim automaticamente', async () => {
-    mockFetch((url) => (url.includes('photon') ? fail() : ok([{ osm_type: 'way', osm_id: 5, lat: '-12.9', lon: '-38.5', name: 'Rua Fallback Quatro', category: 'highway', type: 'residential', address: { city: 'Salvador', state: 'Bahia', country_code: 'br' }, display_name: 'x' }])))
-    const out = await searchPlaces('rua fallback quatro')
-    expect(out.sources).toMatchObject({ photon: 'error', nominatim: 'ok' })
-    expect(out.places[0].title).toBe('Rua Fallback Quatro')
-    expect(calls.some((u) => u.includes('nominatim'))).toBe(true)
-  })
-
-  it('se o Photon vier vazio, o Nominatim complementa', async () => {
-    mockFetch((url) => (url.includes('photon') ? ok({ features: [] }) : ok([{ osm_type: 'node', osm_id: 8, lat: '-23.5', lon: '-46.6', category: 'amenity', type: 'pharmacy', address: { road: 'Rua Cinco', city: 'São Paulo', state: 'São Paulo', country_code: 'br' }, display_name: 'x' }])))
-    const out = await searchPlaces('farmacia cinco')
-    expect(out.sources.nominatim).toBe('ok')
-    expect(out.places[0].title).toBe('Farmácia')
-  })
-
-  it('com as duas fontes fora do ar, informa a falha e não guarda em cache', async () => {
+  it('se o Photon falhar, informa a falha e NÃO chama o Nominatim', async () => {
     mockFetch(() => fail())
-    const out = await searchPlaces('rua indisponivel seis')
+    const out = await searchPlaces('rua indisponivel quatro')
+    expect(out.sources.photon).toBe('error')
     expect(allSourcesFailed(out)).toBe(true)
-    expect(out.places).toHaveLength(0)
+    expect(out.places).toEqual([])
+    expect(nominatimCalls()).toHaveLength(0)
     const before = calls.length
-    await searchPlaces('rua indisponivel seis')
-    expect(calls.length).toBeGreaterThan(before) // tentou de novo: falhas não ficam em cache
+    await searchPlaces('rua indisponivel quatro')
+    expect(calls.length).toBeGreaterThan(before) // falhas não ficam em cache
+    expect(nominatimCalls()).toHaveLength(0)
+  })
+
+  it('HTTP de erro (ex.: 429/503) também vira falha, sem fallback automático', async () => {
+    mockFetch(() => Promise.resolve({ ok: false, status: 429, json: async () => ({}) } as Response))
+    const out = await searchPlaces('rua limitada cinco')
+    expect(out.sources.photon).toBe('error')
+    expect(nominatimCalls()).toHaveLength(0)
+  })
+
+  it('se o Photon vier vazio, mostra "sem resultados" e NÃO chama o Nominatim', async () => {
+    mockFetch(() => ok({ features: [] }))
+    const out = await searchPlaces('xqzwvk seis')
+    expect(out.places).toEqual([])
+    expect(allSourcesFailed(out)).toBe(false)
+    expect(nominatimCalls()).toHaveLength(0)
+  })
+
+  it('digitar muitas consultas seguidas nunca aciona o Nominatim', async () => {
+    mockFetch(() => ok({ features: [] }))
+    for (const q of ['ru', 'rua', 'rua a', 'rua au', 'rua aug', 'rua augu', 'rua august', 'rua augusta', 'rua augusta 1', 'rua augusta 15']) await searchPlaces(q)
+    expect(calls.length).toBeGreaterThan(5)
+    expect(nominatimCalls()).toHaveLength(0)
   })
 
   it('não consulta nada com menos de 2 letras', async () => {
@@ -165,5 +181,76 @@ describe('searchPlaces: Photon principal, Nominatim como fallback', () => {
     const p = searchPlaces('rua cancelada sete', { signal: ctrl.signal })
     ctrl.abort()
     await expect(p).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
+describe('lentidão do provedor', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('Photon que nunca responde: a interface recebe a falha em ~4,5 s, sem esperar mais e sem fallback', async () => {
+    sigFetch((_url, init) => new Promise((_res, rej) => {
+      init?.signal?.addEventListener('abort', () => rej(new DOMException('Aborted', 'AbortError')))
+    }))
+    const t0 = Date.now()
+    const p = searchPlaces('rua lenta oito')
+    await vi.advanceTimersByTimeAsync(PHOTON_TIMEOUT_MS + 600)
+    const out = await p
+    expect(out.sources.photon).toBe('error')
+    expect(Date.now() - t0).toBeLessThan(PHOTON_TIMEOUT_MS + 1000)
+    expect(nominatimCalls()).toHaveLength(0)
+  })
+
+  it('Photon lento porém dentro do limite ainda devolve resultados', async () => {
+    sigFetch(() => new Promise((res) => setTimeout(() => res({ ok: true, status: 200, json: async () => ({ features: [feature('Rua Lenta Nove', 'Recife', 'Pernambuco', -34.88, -8.05)] }) } as Response), 3000)))
+    const p = searchPlaces('rua lenta nove')
+    await vi.advanceTimersByTimeAsync(4200)
+    expect((await p).places).toHaveLength(1)
+  })
+})
+
+describe('busca explícita no Nominatim (política de uso)', () => {
+  const row = (id: number, name: string): NominatimRow => ({ osm_type: 'way', osm_id: id, lat: '-12.9', lon: '-38.5', name, category: 'highway', type: 'residential', address: { city: 'Salvador', state: 'Bahia', country_code: 'br' }, display_name: name })
+
+  it('não consulta com menos de 3 letras', async () => {
+    mockFetch(() => ok([]))
+    expect(await searchNominatim('ab')).toEqual([])
+    expect(calls).toHaveLength(0)
+  })
+
+  it('faz uma consulta pontual, converte o resultado e guarda em cache', async () => {
+    mockFetch(() => ok([row(1, 'Rua Explicita Dez')]))
+    const r = await searchNominatim('rua explicita dez', { bias: [-12.9, -38.5] })
+    expect(r[0].title).toBe('Rua Explicita Dez')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toContain('nominatim.openstreetmap.org/search')
+    expect(calls[0]).not.toContain('bounded') // preferência de região, nunca restrição
+    await searchNominatim('rua explicita dez', { bias: [-12.9, -38.5] })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('consultas iguais simultâneas viram uma só requisição', async () => {
+    mockFetch(() => ok([row(2, 'Rua Dupla Onze')]))
+    await Promise.all([searchNominatim('rua dupla onze'), searchNominatim('rua dupla onze'), searchNominatim('rua dupla onze')])
+    expect(calls).toHaveLength(1)
+  })
+
+  it('respeita o limite global de 1 requisição por segundo', async () => {
+    vi.useFakeTimers()
+    try {
+      const stamps: number[] = []
+      sigFetch(() => { stamps.push(Date.now()); return ok([row(3, 'Rua Limite')]) })
+      const ps = ['rua limite doze', 'rua limite treze', 'rua limite catorze'].map((q) => searchNominatim(q))
+      await vi.advanceTimersByTimeAsync(5000)
+      await Promise.all(ps)
+      expect(stamps).toHaveLength(3)
+      expect(stamps[1] - stamps[0]).toBeGreaterThanOrEqual(1100)
+      expect(stamps[2] - stamps[1]).toBeGreaterThanOrEqual(1100)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('falha do serviço é propagada para a tela avisar o usuário', async () => {
+    mockFetch(() => fail())
+    await expect(searchNominatim('rua falha quinze')).rejects.toBeTruthy()
   })
 })

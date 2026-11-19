@@ -327,7 +327,7 @@ export function AccountSubScreen({ sub }: { sub: AccountSub }) {
         <h3><Icon name="shield-fill" size={22} className="primary" /> Segurança na demonstração</h3>
         <ul>
           <li>Compartilhar a viagem copia apenas um resumo em texto, marcado como simulação.</li>
-          <li>Sua localização real, se autorizada, fica só na memória do navegador e não é enviada a ninguém (exceto a coordenada, para descobrir o nome da rua no OpenStreetMap).</li>
+          <li>Sua localização real, se autorizada, fica só na memória do navegador. Ela só sai do aparelho arredondada (~1 km) para priorizar sugestões próximas e, para descobrir o nome da rua, no OpenStreetMap.</li>
           <li>Não há rastreamento real, chamadas, SMS ou WhatsApp.</li>
           <li>Motoristas, placas e avaliações são fictícios.</li>
         </ul>

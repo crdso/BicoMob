@@ -33,8 +33,8 @@ React 18 · TypeScript · Vite · Leaflet / React Leaflet · Iconify (`iconify-i
 
 | Serviço (OpenStreetMap) | Papel |
 |---|---|
-| **Photon** | Autocomplete de endereços e lugares (principal) |
-| **Nominatim** | Fallback da busca e geocodificação reversa (nome da rua) |
+| **Photon** | **Único** serviço do autocomplete (consultado enquanto você digita) |
+| **Nominatim** (público) | Apenas em ações **explícitas e pontuais**: botão “Buscar no OpenStreetMap”/Enter e nome da rua do GPS ou de um ponto tocado no mapa. **Nunca** no autocomplete |
 | **OSRM** | Rotas, distância e duração |
 | **Tiles OSM** | Mapa |
 
@@ -53,10 +53,16 @@ Não há chaves de API nem configuração geográfica: o app funciona em qualque
 
 ## Como a busca funciona
 
-1. Ao digitar (mínimo de 2 letras, *debounce* de 350 ms), a requisição anterior é cancelada e o **Photon** responde com sugestões, usando sua posição apenas como viés de proximidade.
-2. Se o Photon falhar, vier vazio ou demorar mais de 2,5 s, o **Nominatim** é consultado **automaticamente** (mín. 3 letras, 1 req/s), sem bloquear a tela: o que chegar primeiro já aparece.
-3. Resultados são unidos sem duplicatas, ordenados por relevância do texto e proximidade, paginados (8 por vez) e guardados em cache por 10 minutos.
-4. Se nada for encontrado, ou se os serviços estiverem fora do ar, a tela avisa e mantém **Escolher no mapa**.
+**Autocomplete (automático):**
+
+1. Ao digitar (mínimo de 2 letras, *debounce* de 350 ms), a requisição anterior é cancelada e o **Photon** responde com sugestões, usando sua posição apenas como viés de proximidade (outras cidades continuam acessíveis).
+2. Resultados são ordenados por relevância do texto e proximidade, sem duplicatas, paginados (8 por vez) e guardados em cache por 10 minutos. Falhas não ficam em cache.
+3. Timeout de 4,5 s: se o Photon falhar, retornar erro (ex.: 429/503) ou demorar demais, a tela avisa e oferece **Tentar novamente**, **Buscar no OpenStreetMap** e **Escolher no mapa**. **Não há fallback automático** para outro serviço.
+4. O endereço do Photon pode ser trocado por uma instância própria com a variável `VITE_PHOTON_URL` (ex.: `VITE_PHOTON_URL=https://meu-photon.exemplo/api/`), indicada para uso intenso.
+
+**Busca explícita (só por ação do usuário):** o botão **Buscar no OpenStreetMap** (ou Enter) faz uma única consulta ao Nominatim público, em conformidade com a [política de uso](https://operations.osmfoundation.org/policies/nominatim/): nunca a cada tecla, mínimo de 3 letras, limite global de 1 requisição por segundo (compartilhado com a geocodificação reversa), cache de 30 minutos, sem repetir consulta igual em andamento e sem restringir a região (a posição só dá preferência). O navegador identifica o app pelo cabeçalho `Referer` (navegadores não permitem definir `User-Agent`).
+
+**Sempre disponível:** **Escolher no mapa** aceita qualquer ponto, mesmo sem nenhum serviço de busca.
 
 Alternativas avaliadas: Geoapify e LocationIQ têm bom autocomplete, mas exigem chave que ficaria exposta no navegador; o Overpass não faz busca de endereços e é instável para consultas interativas, por isso foi removido.
 
@@ -70,7 +76,7 @@ Alternativas avaliadas: Geoapify e LocationIQ têm bom autocomplete, mas exigem 
 
 ## Privacidade
 
-A posição real fica apenas na memória do navegador. A única consulta que a usa é a geocodificação reversa (para mostrar o nome da rua), feita no Nominatim. No histórico local é salva apenas uma posição aproximada (~100 m), sem o nome da rua. Dados da demo (histórico, favoritos, recentes) ficam no `localStorage` e podem ser apagados em **Conta → Limpar dados**.
+A posição real fica apenas na memória do navegador. Ela só sai do navegador de duas formas: (1) como viés de proximidade no autocomplete do Photon, **arredondada a ~1 km**; (2) na geocodificação reversa (nome da rua), feita no Nominatim. No histórico local é salva apenas uma posição aproximada (~100 m), sem o nome da rua. Dados da demo (histórico, favoritos, recentes) ficam no `localStorage` e podem ser apagados em **Conta → Limpar dados**.
 
 ## Responsividade
 
@@ -85,7 +91,8 @@ A posição real fica apenas na memória do navegador. A única consulta que a u
 - Buscas por categoria genérica (ex.: “farmácia”) dependem de o local ter nome ou tipo cadastrado no OSM.
 - Se o OSRM estiver indisponível, a rota vira uma linha tracejada e a distância é uma estimativa em linha reta (×1,3), com aviso na tela.
 - A duração usa o perfil de carro do OSRM também para moto.
-- O Nominatim público proíbe autocomplete intensivo; por isso ele só atua como fallback, com limite de 1 requisição por segundo.
+- O Nominatim público não pode ser usado para autocomplete; por isso só atende buscas explícitas e a geocodificação reversa, com limite global de 1 requisição por segundo.
+- O Photon público também é de uso justo (sem garantia). Para uso intenso, hospede o seu e aponte `VITE_PHOTON_URL` para ele.
 
 ## Estrutura
 

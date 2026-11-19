@@ -6,7 +6,7 @@ import { PlaceIcon, ScreenHeader, Sheet } from '../components/UI'
 import { brl, fareBreakdown, FARE_CONFIG, type Category } from '../lib/fare'
 import { describeArea, GEO_MESSAGES, geolocationPermission, getCurrentPosition, GeoError, placeFromMyPos, reverseGeocode, type GeoFailure, type MyPos } from '../lib/geo'
 import { normalize, samePlace, type LatLng, type Place } from '../lib/places'
-import { allSourcesFailed, MIN_CHARS, searchPlaces, type SearchOutcome } from '../lib/search'
+import { allSourcesFailed, mergePlaces, MIN_CHARS, NOMINATIM_MIN_CHARS, searchNominatim, searchPlaces, type SearchOutcome } from '../lib/search'
 import { useStore, type FavoriteKind, type Ride } from '../store'
 
 const PAGE = 8
@@ -19,6 +19,10 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
   const [q, setQ] = useState('')
   const [typed, setTyped] = useState(false)
   const [outcome, setOutcome] = useState<SearchOutcome | null>(null)
+  // Resultados da busca EXPLÍCITA no OpenStreetMap (Nominatim): só depois de um toque/Enter do usuário.
+  const [extra, setExtra] = useState<Place[]>([])
+  const [extraBusy, setExtraBusy] = useState(false)
+  const [extraNote, setExtraNote] = useState<string | null>(null)
   const [searching, setSearching] = useState(false)
   const [retry, setRetry] = useState(0)
   const [visible, setVisible] = useState(PAGE)
@@ -41,6 +45,7 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
   // Pesquisa automática enquanto digita: debounce, cancelamento da anterior e resultados progressivos.
   useEffect(() => {
     setVisible(PAGE)
+    setExtra([]); setExtraNote(null)
     if (!hasQuery) { setOutcome(null); setSearching(false); return }
     setSearching(true)
     const ctrl = new AbortController()
@@ -49,7 +54,7 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
         const res = await searchPlaces(query, { bias, signal: ctrl.signal, onUpdate: (o) => { if (!ctrl.signal.aborted) setOutcome(o) } })
         if (!ctrl.signal.aborted) { setOutcome(res); setSearching(false) }
       } catch (err) {
-        if ((err as Error).name !== 'AbortError') { setOutcome({ places: [], sources: { photon: 'error', nominatim: 'error' } }); setSearching(false) }
+        if ((err as Error).name !== 'AbortError') { setOutcome({ places: [], sources: { photon: 'error' } }); setSearching(false) }
       }
     }, DEBOUNCE_MS)
     return () => { clearTimeout(t); ctrl.abort() }
@@ -57,8 +62,26 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, hasQuery, retry, bias?.[0].toFixed(1), bias?.[1].toFixed(1)])
 
-  const results = outcome?.places ?? []
-  const failed = !!outcome && !searching && allSourcesFailed(outcome)
+  const results = useMemo(
+    () => (extra.length ? mergePlaces([outcome?.places ?? [], extra], query, bias) : outcome?.places ?? []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [outcome, extra, query],
+  )
+  const failed = !!outcome && !searching && allSourcesFailed(outcome) && !extra.length
+
+  /** Consulta explícita e pontual ao Nominatim público (botão ou Enter), nunca a cada tecla. */
+  const searchOnOsm = async () => {
+    if (extraBusy || normalize(query).length < NOMINATIM_MIN_CHARS) return
+    setExtraBusy(true); setExtraNote(null)
+    try {
+      const r = await searchNominatim(query, { bias })
+      setExtra(r)
+      if (!r.length) setExtraNote('O OpenStreetMap também não encontrou esse endereço. Tente outro nome ou escolha o ponto no mapa.')
+    } catch {
+      setExtraNote('A busca no OpenStreetMap está indisponível agora. Escolha o ponto no mapa.')
+    } finally { setExtraBusy(false) }
+  }
+  const onEnter = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && hasQuery) void searchOnOsm() }
 
   /** Usa a posição REAL do aparelho como partida. Nunca assume uma cidade. */
   const adoptPosition = useCallback((pos: MyPos): Place | null => {
@@ -181,7 +204,7 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
           <div className="field-row">
             <span className="field-ic"><Icon name="search" size={20} /></span>
             <input className="field active" aria-label="Buscar endereço" placeholder="Buscar rua, bairro ou local" value={q} autoFocus
-              onChange={(e) => { setQ(e.target.value); setTyped(true) }} />
+              onChange={(e) => { setQ(e.target.value); setTyped(true) }} onKeyDown={onEnter} />
           </div>
         ) : (
           <div className="fields">
@@ -191,13 +214,13 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
                 className={`field ${focus === 'origin' ? 'active' : ''}`} aria-label="Local de partida" placeholder="Local de partida"
                 value={fieldValue('origin')}
                 onFocus={(e) => { setFocus('origin'); setQ(''); setTyped(false); e.target.select() }}
-                onChange={(e) => { setQ(e.target.value); setTyped(true) }}
+                onChange={(e) => { setQ(e.target.value); setTyped(true) }} onKeyDown={onEnter}
               />
               <input
                 className={`field ${focus === 'dest' ? 'active' : ''}`} aria-label="Para onde?" placeholder="Para onde?"
                 value={fieldValue('dest')} autoFocus={initialFocus === 'dest'}
                 onFocus={(e) => { setFocus('dest'); setQ(''); setTyped(false); e.target.select() }}
-                onChange={(e) => { setQ(e.target.value); setTyped(true) }}
+                onChange={(e) => { setQ(e.target.value); setTyped(true) }} onKeyDown={onEnter}
               />
             </div>
             <button className="icon-btn swap" aria-label="Inverter partida e destino" disabled={!origin || !dest} onClick={swap}><Icon name="swap" size={22} /></button>
@@ -287,7 +310,7 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
               <div className="no-results" role="alert">
                 <Icon name="alert" size={30} />
                 <b>Busca indisponível no momento</b>
-                <small>Os serviços públicos de mapas não responderam. Tente de novo ou escolha o ponto direto no mapa.</small>
+                <small>O serviço de sugestões não respondeu a tempo. Tente de novo, busque no OpenStreetMap ou escolha o ponto direto no mapa.</small>
                 <button className="pill-btn" onClick={() => setRetry((n) => n + 1)}><Icon name="retry" size={18} /> Tentar novamente</button>
               </div>
             )}
@@ -298,8 +321,18 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
                 <small>Não encontramos “{query}”. Tente outro nome ou endereço, ou escolha o ponto no mapa.</small>
               </div>
             )}
-            {!searching && (failed || !results.length) && (
-              <div className="more-actions"><button className="pill-btn" onClick={openPicker}><Icon name="crosshair" size={18} /> Escolher no mapa</button></div>
+            {extraNote && <p className="tiny muted pad-x">{extraNote}</p>}
+            {!searching && (
+              <div className="more-actions">
+                {normalize(query).length >= NOMINATIM_MIN_CHARS && (
+                  <button className="pill-btn" onClick={searchOnOsm} disabled={extraBusy}>
+                    <Icon name={extraBusy ? 'loader' : 'search'} size={18} className={extraBusy ? 'spin' : ''} /> Buscar no OpenStreetMap
+                  </button>
+                )}
+                {(failed || !results.length) && (
+                  <button className="pill-btn" onClick={openPicker}><Icon name="crosshair" size={18} /> Escolher no mapa</button>
+                )}
+              </div>
             )}
           </>
         )}

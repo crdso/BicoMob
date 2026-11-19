@@ -4,11 +4,15 @@ import { haversineKm, isValidPosition, normalize, type IconKey, type LatLng, typ
 /* ---------------------------------------------------------------------------------------------
  * Busca de endereços e lugares (dados do OpenStreetMap), em qualquer cidade.
  *
- *  - Photon (komoot): principal. Feito para autocomplete (busca-enquanto-digita), sem chave,
- *    com viés de localização (`lat`/`lon`) que prioriza o que está perto sem impedir outras cidades.
- *  - Nominatim (público): fallback automático. Só é consultado se o Photon falhar, vier vazio ou
- *    demorar mais de 2,5 s (requisição "hedged"), com mínimo de 3 letras, 1 req/s e cache.
- *    Não é usado a cada tecla, respeitando a política de uso do servidor público.
+ *  - AUTOCOMPLETE (a cada digitação, com debounce na tela): somente o Photon (komoot), feito para
+ *    busca-enquanto-digita, com viés de localização (`lat`/`lon`) que prioriza o que está perto sem
+ *    impedir outras cidades. Se falhar ou demorar, a interface informa e oferece escolher no mapa
+ *    ou uma busca explícita. NÃO há fallback automático para outro serviço.
+ *    O endereço do Photon pode ser trocado por uma instância própria com `VITE_PHOTON_URL`.
+ *  - Nominatim público: NUNCA no autocomplete (a política de uso proíbe). Só em consultas
+ *    explícitas e pontuais — o usuário toca em "Buscar no OpenStreetMap" ou pressiona Enter —,
+ *    com no mínimo 3 letras, limite global de 1 req/s (compartilhado com a geocodificação
+ *    reversa), cache e sem repetir a mesma consulta. O navegador identifica o app pelo Referer.
  *
  * Debounce e cancelamento ficam na tela; aqui há cache, limites, timeouts curtos e ordenação.
  * Nada é inventado: só aparece o que as fontes retornam.
@@ -17,18 +21,20 @@ import { haversineKm, isValidPosition, normalize, type IconKey, type LatLng, typ
 export type SourceStatus = 'pending' | 'ok' | 'error' | 'skipped'
 export interface SearchOutcome {
   places: Place[]
-  sources: { photon: SourceStatus; nominatim: SourceStatus }
+  sources: { photon: SourceStatus }
 }
 
-const PHOTON = 'https://photon.komoot.io/api/'
+const PHOTON = (import.meta.env?.VITE_PHOTON_URL as string | undefined) || 'https://photon.komoot.io/api/'
 const NOMINATIM = 'https://nominatim.openstreetmap.org/search'
 export const PHOTON_TIMEOUT_MS = 4500
 export const NOMINATIM_TIMEOUT_MS = 6500
-export const HEDGE_AFTER_MS = 2500
+export const NOMINATIM_MIN_CHARS = 3
 export const MAX_RESULTS = 30
 export const MIN_CHARS = 2
 
 const cache = new TtlCache<SearchOutcome>(10 * 60 * 1000, 150)
+const explicitCache = new TtlCache<Place[]>(30 * 60 * 1000, 60)
+const explicitInFlight = new Map<string, Promise<Place[]>>()
 
 /* ------------------------------ Ícones por categoria ------------------------------ */
 
@@ -182,7 +188,8 @@ export function mergePlaces(lists: Place[][], q: string, bias?: LatLng): Place[]
 async function photon(q: string, bias: LatLng | undefined, signal?: AbortSignal): Promise<Place[]> {
   await throttled('photon', 250, signal)
   const params = new URLSearchParams({ q, limit: '12' })
-  if (bias) { params.set('lat', String(bias[0])); params.set('lon', String(bias[1])); params.set('location_bias_scale', '0.5') }
+  // Privacidade: o viés de proximidade é enviado arredondado (~1 km), nunca a posição exata.
+  if (bias) { params.set('lat', bias[0].toFixed(2)); params.set('lon', bias[1].toFixed(2)); params.set('location_bias_scale', '0.5') }
   const res = await fetchWithTimeout(`${PHOTON}?${params}`, {}, PHOTON_TIMEOUT_MS, signal)
   if (!res.ok) throw new Error('Photon HTTP ' + res.status)
   const j = (await res.json()) as { features?: PhotonFeature[] }
@@ -190,7 +197,8 @@ async function photon(q: string, bias: LatLng | undefined, signal?: AbortSignal)
   return j.features.map(photonToPlace).filter((p): p is Place => !!p)
 }
 
-async function nominatim(q: string, bias: LatLng | undefined, signal?: AbortSignal): Promise<Place[]> {
+async function nominatimRequest(q: string, bias: LatLng | undefined, signal?: AbortSignal): Promise<Place[]> {
+  // Mesmo limitador global da geocodificação reversa: no máximo 1 requisição por segundo no total.
   await throttled('nominatim', 1100, signal)
   const params = new URLSearchParams({ format: 'jsonv2', addressdetails: '1', limit: '10', q })
   // `viewbox` sem `bounded` só dá preferência à região do usuário: outras cidades continuam acessíveis.
@@ -208,62 +216,57 @@ async function nominatim(q: string, bias: LatLng | undefined, signal?: AbortSign
 const abortError = () => new DOMException('Aborted', 'AbortError')
 
 /**
- * Pesquisa lugares. `onUpdate` é chamado a cada fonte que responde, então os resultados do Photon
- * aparecem imediatamente. Se o Photon falhar, vier vazio ou passar de 2,5 s, o Nominatim é consultado
- * automaticamente — a interface nunca fica esperando uma fonte lenta para mostrar a outra.
+ * Autocomplete: consulta SOMENTE o Photon. Nunca chama o Nominatim.
+ * Falhas e lentidão (timeout de 4,5 s) viram `sources.photon === 'error'`, para a tela avisar.
  */
 export async function searchPlaces(
   q: string,
   opts: { bias?: LatLng; signal?: AbortSignal; onUpdate?: (o: SearchOutcome) => void } = {},
 ): Promise<SearchOutcome> {
   const nq = normalize(q)
-  const empty: SearchOutcome = { places: [], sources: { photon: 'skipped', nominatim: 'skipped' } }
-  if (nq.length < MIN_CHARS) return empty
+  if (nq.length < MIN_CHARS) return { places: [], sources: { photon: 'skipped' } }
 
   const bias = opts.bias && isValidPosition(opts.bias) ? opts.bias : undefined
   const key = `${nq}|${bias ? `${bias[0].toFixed(1)},${bias[1].toFixed(1)}` : 'global'}`
   const hit = cache.get(key)
   if (hit) { opts.onUpdate?.(hit); return hit }
 
-  const sources: SearchOutcome['sources'] = { photon: 'pending', nominatim: 'skipped' }
-  let ph: Place[] = []
-  let nm: Place[] = []
-  const snapshot = (): SearchOutcome => ({ places: mergePlaces([ph, nm], q, bias).slice(0, MAX_RESULTS), sources: { ...sources } })
-  const emit = () => { if (!opts.signal?.aborted) opts.onUpdate?.(snapshot()) }
-
-  let nmPromise: Promise<void> | null = null
-  const startNominatim = () => {
-    if (nmPromise || nq.length < 3 || opts.signal?.aborted) return
-    sources.nominatim = 'pending'
-    emit()
-    nmPromise = nominatim(q, bias, opts.signal)
-      .then((list) => { nm = list; sources.nominatim = 'ok' })
-      .catch(() => { sources.nominatim = 'error' })
-      .then(emit)
-  }
-
-  const hedge = setTimeout(startNominatim, HEDGE_AFTER_MS)
+  let outcome: SearchOutcome
   try {
-    await photon(q, bias, opts.signal)
-      .then((list) => { ph = list; sources.photon = 'ok' })
-      .catch(() => { sources.photon = 'error' })
-    emit()
-    if (sources.photon === 'error' || ph.length === 0) startNominatim()
-    if (nmPromise) await nmPromise
-  } finally {
-    clearTimeout(hedge)
+    const list = await photon(q, bias, opts.signal)
+    outcome = { places: mergePlaces([list], q, bias).slice(0, MAX_RESULTS), sources: { photon: 'ok' } }
+  } catch {
+    outcome = { places: [], sources: { photon: 'error' } }
   }
   if (opts.signal?.aborted) throw abortError()
-
-  const outcome = snapshot()
-  // Não guarda no cache respostas vazias causadas por falha das fontes.
-  const failed = sources.photon === 'error' && sources.nominatim !== 'ok'
-  if (!failed) cache.set(key, outcome)
+  opts.onUpdate?.(outcome)
+  // Falhas não ficam em cache: a próxima tentativa consulta de novo.
+  if (outcome.sources.photon === 'ok') cache.set(key, outcome)
   return outcome
 }
 
-/** Nenhuma fonte respondeu (para mostrar "serviço indisponível" em vez de "sem resultados"). */
+/**
+ * Busca EXPLÍCITA no Nominatim público (o usuário tocou no botão ou pressionou Enter).
+ * Compatível com a política de uso: pontual, mín. 3 letras, 1 req/s global, cache e sem duplicar
+ * uma consulta em andamento. Lança erro se o serviço falhar (a tela mostra a mensagem).
+ */
+export async function searchNominatim(q: string, opts: { bias?: LatLng; signal?: AbortSignal } = {}): Promise<Place[]> {
+  const nq = normalize(q)
+  if (nq.length < NOMINATIM_MIN_CHARS) return []
+  const bias = opts.bias && isValidPosition(opts.bias) ? opts.bias : undefined
+  const key = `${nq}|${bias ? `${bias[0].toFixed(1)},${bias[1].toFixed(1)}` : 'global'}`
+  const hit = explicitCache.get(key)
+  if (hit) return hit
+  const running = explicitInFlight.get(key)
+  if (running) return running
+  const p = nominatimRequest(q, bias, opts.signal)
+    .then((list) => { explicitCache.set(key, list); return mergePlaces([list], q, bias) })
+    .finally(() => explicitInFlight.delete(key))
+  explicitInFlight.set(key, p)
+  return p
+}
+
+/** O Photon não respondeu (para mostrar "serviço indisponível" em vez de "sem resultados"). */
 export function allSourcesFailed(o: SearchOutcome): boolean {
-  const { photon, nominatim } = o.sources
-  return photon === 'error' && (nominatim === 'error' || nominatim === 'skipped')
+  return o.sources.photon === 'error'
 }
