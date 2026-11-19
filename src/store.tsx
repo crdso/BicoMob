@@ -1,7 +1,22 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { calculateFare, type Category } from './lib/fare'
-import { CENTRO, isIftoZone, type Place } from './lib/places'
+import { loadBoundary } from './lib/boundary'
+import { watchPosition, type MyPos } from './lib/geo'
+import { CENTRO, isIftoZone, type LatLng, type Place } from './lib/places'
 import { estimateRoute, fetchRoute, type RouteResult } from './lib/routing'
+
+const round3 = (n: number) => Math.round(n * 1000) / 1000
+
+/** Histórico guardado no navegador: a posição real do GPS é arredondada (~100 m) e sem o nome da rua. */
+function sanitizeRide(r: Ride): Ride {
+  if (r.origin.id !== 'gps') return r
+  const rp = (p: LatLng): LatLng => [round3(p[0]), round3(p[1])]
+  return {
+    ...r,
+    origin: { ...r.origin, title: 'Localização atual (aproximada)', subtitle: 'Posição arredondada', position: rp(r.origin.position) },
+    coords: r.coords.map(rp),
+  }
+}
 
 export type Tab = 'home' | 'services' | 'activity' | 'account'
 export type AccountSub = 'perfil' | 'favoritos' | 'pagamento' | 'notificacoes' | 'seguranca' | 'ajuda'
@@ -103,9 +118,12 @@ interface Store {
   push(s: Screen): void
   pop(): void
   goHome(): void
-  origin: Place
+  origin: Place | null
   dest: Place | null
-  setOrigin(p: Place): void
+  /** Posição real (só em memória) enquanto o usuário permitir; usada para o ponto azul no mapa. */
+  me: MyPos | null
+  setMe(p: MyPos | null): void
+  setOrigin(p: Place | null): void
   setDest(p: Place | null): void
   swap(): void
   category: Category
@@ -133,8 +151,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [rides, setRides] = useState<Ride[]>(loadRides)
   const [tab, setTab] = useState<Tab>('home')
   const [stack, setStack] = useState<Screen[]>([])
-  const [origin, setOriginState] = useState<Place>(CENTRO)
+  // Sem origem até o usuário escolher: nunca fingimos que ele está no Centro.
+  const [origin, setOriginState] = useState<Place | null>(null)
   const [dest, setDestState] = useState<Place | null>(null)
+  const [me, setMe] = useState<MyPos | null>(null)
   const [category, setCategory] = useState<Category>('moto')
   const [route, setRoute] = useState<RouteState>({ state: 'idle' })
   const [activeRide, setActiveRide] = useState<Ride | null>(null)
@@ -148,6 +168,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try { localStorage.setItem('bicomob:rides', JSON.stringify(rides)) } catch { /* sem storage */ }
   }, [rides])
 
+  // Limite municipal real (OSM). Em cache no navegador depois da primeira vez.
+  useEffect(() => { void loadBoundary() }, [])
+
+  // Depois que o usuário autorizou a localização, mantém o ponto azul atualizado (só em memória).
+  const watching = me !== null
+  useEffect(() => {
+    if (!watching) return
+    return watchPosition((p) => setMe(p), () => { /* mantém a última posição conhecida */ })
+  }, [watching])
+
   const showToast = useCallback((m: string) => {
     setToast(m)
     window.clearTimeout(toastTimer.current)
@@ -157,17 +187,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const reqId = useRef(0)
   const resetRoute = () => { reqId.current++; setRoute({ state: 'idle' }) }
 
-  const setOrigin = (p: Place) => { setOriginState(p); resetRoute() }
+  const setOrigin = (p: Place | null) => { setOriginState(p); resetRoute() }
   const setDest = (p: Place | null) => { setDestState(p); resetRoute() }
   const swap = () => {
-    if (!dest) return
+    if (!dest || !origin) return
     setOriginState(dest)
     setDestState(origin)
     resetRoute()
   }
 
   const loadRoute = useCallback(() => {
-    if (!dest) return
+    if (!dest || !origin) return
     const id = ++reqId.current
     setRoute({ state: 'loading' })
     fetchRoute(origin.position, dest.position)
@@ -175,7 +205,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .catch(() => { if (id === reqId.current) setRoute({ state: 'ready', data: estimateRoute(origin.position, dest.position), failed: true }) })
   }, [origin, dest])
 
-  const iftoZone = dest ? isIftoZone(origin, dest) : false
+  const iftoZone = dest && origin ? isIftoZone(origin, dest) : false
   const prices = useMemo(() => {
     if (route.state !== 'ready') return null
     const { km, minutes } = route.data
@@ -186,7 +216,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [route, iftoZone])
 
   const requestRide = () => {
-    if (!dest || route.state !== 'ready' || !prices) return
+    if (!dest || !origin || route.state !== 'ready' || !prices) return
     const r = route.data
     const ride: Ride = {
       id: `r${Date.now()}`,
@@ -216,14 +246,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const cancelRide = () => {
     if (!activeRide) return
-    setRides((rs) => [{ ...activeRide, status: 'cancelled' }, ...rs])
+    setRides((rs) => [sanitizeRide({ ...activeRide, status: 'cancelled' }), ...rs])
     setActiveRide(null)
   }
 
   const finishRide = () => {
     if (!activeRide) return null
     const done = { ...activeRide, status: 'completed' as const }
-    setRides((rs) => [done, ...rs])
+    setRides((rs) => [sanitizeRide(done), ...rs])
     setActiveRide(null)
     return done.id
   }
@@ -245,7 +275,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     logout: (clear) => {
       try { sessionStorage.removeItem('bicomob:session') } catch { /* ok */ }
       if (clear) { setRides([]); setProfileState(DEFAULT_PROFILE) }
-      setActiveRide(null); setStack([]); setTab('home'); setDestState(null); setOriginState(CENTRO); resetRoute()
+      setActiveRide(null); setStack([]); setTab('home'); setDestState(null); setOriginState(null); setMe(null); resetRoute()
       setLogged(false)
     },
     profile,
@@ -258,7 +288,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     push: (s) => setStack((x) => [...x, s]),
     pop: () => setStack((x) => x.slice(0, -1)),
     goHome: () => { setStack([]); setTab('home') },
-    origin, dest, setOrigin, setDest, swap,
+    origin, dest, me, setMe, setOrigin, setDest, swap,
     category, setCategory,
     route, loadRoute, prices, iftoZone,
     activeRide, requestRide, advanceRide, cancelRide, finishRide, repeat,

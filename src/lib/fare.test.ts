@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { brl, calculateFare, fareBreakdown } from './fare'
-import { CENTRO, HOSPITAL, IFTO, isIftoZone, searchCurated, inDemoBounds } from './places'
+import { CENTRO, HOSPITAL, IFTO, isIftoZone } from './places'
 
 describe('calculateFare', () => {
   it('moto urbano 2 km / 6 min = 7,10', () => expect(calculateFare('moto', 2, 6, false)).toBe(7.1))
@@ -32,12 +32,8 @@ describe('zona IFTO e locais', () => {
     expect(isIftoZone(IFTO, CENTRO)).toBe(true)
     expect(isIftoZone(CENTRO, HOSPITAL)).toBe(false)
   })
-  it('busca curada ignora acentos', () => {
-    expect(searchCurated('praca').length).toBeGreaterThan(0)
-    expect(searchCurated('Imperatriz')).toHaveLength(0)
-  })
-  it('bounds excluem outras cidades', () => {
-    expect(inDemoBounds(IFTO.position)).toBe(true)
-    expect(inDemoBounds([-5.52, -47.47])).toBe(false) // Imperatriz-MA
+  it('GPS perto do IFTO também aciona o suplemento', () => {
+    const gps = { id: 'gps', title: 'x', subtitle: '', position: [-5.6452, -48.0716] as [number, number], icon: 'gps-fill' as const }
+    expect(isIftoZone(gps, CENTRO)).toBe(true)
   })
 })
