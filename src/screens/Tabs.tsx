@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Avatar, CarArt, HeroScene, LogoMark, MotoArt } from '../components/Art'
+import { Avatar, HeroScene, LogoMark } from '../components/Art'
 import { Icon, type IconName } from '../components/Icon'
 import { Sheet, Toggle } from '../components/UI'
 import { brl } from '../lib/fare'
@@ -47,7 +47,7 @@ export function Welcome() {
 }
 
 export function Home() {
-  const { push, profile, recents, activeRide, setTab, setCategory } = useStore()
+  const { push, profile, recents, activeRide } = useStore()
   const start = useStartTrip()
   return (
     <div className="screen">
@@ -89,43 +89,18 @@ export function Home() {
         ))}
       </ul>
 
-      <div className="row-between">
-        <h2 className="section-title">Sugestões</h2>
-        <button className="link" onClick={() => setTab('services')}>Ver tudo</button>
-      </div>
-      <div className="tiles">
-        <button className="tile" onClick={() => { setCategory('moto'); push({ k: 'search', focus: 'dest' }) }}><MotoArt /><span>Moto</span></button>
-        <button className="tile" onClick={() => { setCategory('carro'); push({ k: 'search', focus: 'dest' }) }}><CarArt /><span>Carro</span></button>
-        <button className="tile soon" onClick={() => setTab('services')}><span className="tile-ic"><Icon name="calendar" size={34} /></span><span>Reservar</span><em>Em breve</em></button>
-        <button className="tile soon" onClick={() => setTab('services')}><span className="tile-ic"><Icon name="box" size={34} /></span><span>Entregas</span><em>Em breve</em></button>
-      </div>
-
-      <h2 className="section-title">Mais formas de usar o BicoMob</h2>
-      <div className="promos">
-        <button className="promo" onClick={() => { setCategory('moto'); push({ k: 'search', focus: 'dest' }) }}>
-          <div className="promo-art moto"><MotoArt className="promo-car moto-art" /></div>
-          <div className="promo-body"><b>Moto na cidade</b><small>Chegue mais rápido e gaste menos</small><Icon name="chevron" size={20} className="primary" /></div>
-        </button>
-        <button className="promo" onClick={() => { setCategory('carro'); push({ k: 'search', focus: 'dest' }) }}>
-          <div className="promo-art city"><CarArt className="promo-car" color="#dfe3df" /></div>
-          <div className="promo-body"><b>Carro com conforto</b><small>Espaço para você e quem for junto</small><Icon name="chevron" size={20} className="primary" /></div>
-        </button>
-      </div>
     </div>
   )
 }
 
 export function Services() {
-  const { push, setCategory, showToast } = useStore()
+  const { push, showToast } = useStore()
   return (
     <div className="screen">
       <h1 className="page-title">Serviços</h1>
       <div className="svc-list">
-        <button className="svc" onClick={() => { setCategory('moto'); push({ k: 'search', focus: 'dest' }) }}>
-          <MotoArt className="svc-art" /><div><b>Moto</b><small>Mais rápida e econômica pela cidade</small></div><Icon name="chevron" size={20} className="muted" />
-        </button>
-        <button className="svc" onClick={() => { setCategory('carro'); push({ k: 'search', focus: 'dest' }) }}>
-          <CarArt className="svc-art" /><div><b>Carro</b><small>Mais conforto para até 4 pessoas</small></div><Icon name="chevron" size={20} className="muted" />
+        <button className="svc" onClick={() => push({ k: 'search', focus: 'dest' })}>
+          <span className="svc-art ic"><Icon name="navigation" size={34} /></span><div><b>Solicitar viagem</b><small>Escolha o destino e, em seguida, o tipo de viagem</small></div><Icon name="chevron" size={20} className="muted" />
         </button>
         <button className="svc soon" onClick={() => showToast('Reservar: em breve. Ainda não disponível.')}>
           <span className="svc-art ic"><Icon name="calendar" size={34} /></span><div><b>Reservar <em className="soon-tag">Em breve</em></b><small>Agende sua corrida com antecedência</small></div>
@@ -182,7 +157,7 @@ const PAY_INFO = {
 }
 
 export function Account() {
-  const { push, profile, setProfile, logout, showToast, clearRides } = useStore()
+  const { push, profile, setProfile, theme, setTheme, logout, showToast, clearRides } = useStore()
   const [confirmClear, setConfirmClear] = useState(false)
   const rows: { sub: AccountSub; icon: IconName; label: string; hint?: string }[] = [
     { sub: 'perfil', icon: 'account', label: 'Perfil' },
@@ -213,7 +188,7 @@ export function Account() {
         <li>
           <div className="set-row">
             <span className="set-ic"><Icon name="moon" size={22} /></span><span className="grow">Tema escuro</span>
-            <Toggle label="Tema escuro" on={profile.theme === 'dark'} onChange={(v) => setProfile({ theme: v ? 'dark' : 'light' })} />
+            <Toggle label="Tema escuro" on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />
           </div>
         </li>
         <li>
@@ -229,14 +204,14 @@ export function Account() {
       </ul>
       <p className="center muted small-note">BicoMob • Demonstração interativa</p>
       <p className="center muted tiny credits">
-        Mapas e locais © contribuidores do OpenStreetMap • Ícones: Solar (480 Design, CC BY 4.0) e Phosphor (MIT) via Iconify
+        Ícones: Solar (480 Design, CC BY 4.0) e Phosphor (MIT)
       </p>
       {confirmClear && (
         <Sheet title="Limpar dados?" onClose={() => setConfirmClear(false)}>
           <p className="muted">Remove o histórico de viagens, os recentes e as preferências salvas neste navegador.</p>
           <div className="btn-row">
             <button className="btn ghost" onClick={() => setConfirmClear(false)}>Cancelar</button>
-            <button className="btn danger" onClick={() => { clearRides(); setProfile({ name: 'Cliente', payment: 'dinheiro', theme: 'dark', home: null, work: null }); setConfirmClear(false); showToast('Dados da demo limpos') }}>Limpar</button>
+            <button className="btn danger" onClick={() => { clearRides(); setProfile({ name: 'Cliente', payment: 'dinheiro', home: null, work: null }); setConfirmClear(false); showToast('Dados da demo limpos') }}>Limpar</button>
           </div>
         </Sheet>
       )}
@@ -327,7 +302,7 @@ export function AccountSubScreen({ sub }: { sub: AccountSub }) {
         <h3><Icon name="shield-fill" size={22} className="primary" /> Segurança na demonstração</h3>
         <ul>
           <li>Compartilhar a viagem copia apenas um resumo em texto, marcado como simulação.</li>
-          <li>Sua localização real, se autorizada, fica só na memória do navegador. Ela só sai do aparelho arredondada (~1 km) para priorizar sugestões próximas e, para descobrir o nome da rua, no OpenStreetMap.</li>
+          <li>Sua localização real, se autorizada, fica só na memória do navegador. Ela só é usada para sugerir lugares próximos (de forma aproximada) e para descobrir o nome da rua.</li>
           <li>Não há rastreamento real, chamadas, SMS ou WhatsApp.</li>
           <li>Motoristas, placas e avaliações são fictícios.</li>
         </ul>
@@ -340,7 +315,7 @@ export function AccountSubScreen({ sub }: { sub: AccountSub }) {
       <ol>
         <li>Toque em <b>Para onde?</b> e pesquise ruas, bairros, estabelecimentos ou endereços completos.</li>
         <li>Defina a partida: <b>Sua localização atual</b>, um endereço pesquisado ou um ponto no mapa.</li>
-        <li>Confira o trajeto no mapa e compare Moto e Carro.</li>
+        <li>Confira o trajeto no mapa e escolha entre Moto, Carro ou Seu preço.</li>
         <li>Toque em <b>Solicitar</b>: um motorista fictício aceita em poucos segundos.</li>
         <li>Use <b>Simular chegada</b>, <b>Iniciar viagem</b> e <b>Finalizar viagem</b>.</li>
       </ol>

@@ -1,7 +1,18 @@
 import type { ReactNode } from 'react'
 import type { IconKey } from '../lib/places'
+import { useStore } from '../store'
 import { BrandLogo } from './Art'
 import { Icon } from './Icon'
+
+export function ThemeButton() {
+  const { theme, toggleTheme } = useStore()
+  const light = theme === 'light'
+  return (
+    <button className="theme-btn" onClick={toggleTheme} aria-label={light ? 'Ativar modo escuro' : 'Ativar modo claro'} title={light ? 'Modo claro (toque para escuro)' : 'Modo escuro (toque para claro)'}>
+      <Icon name={light ? 'sun-fill' : 'moon-fill'} size={20} />
+    </button>
+  )
+}
 
 export function AppHeader({ section }: { section?: string }) {
   return (
@@ -9,7 +20,7 @@ export function AppHeader({ section }: { section?: string }) {
       <BrandLogo size={28} />
       {section && <span className="header-sep" />}
       {section && <span className="header-section">{section}</span>}
-      <span className="demo-badge">Demo</span>
+      <ThemeButton />
     </header>
   )
 }

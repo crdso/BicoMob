@@ -4,11 +4,11 @@ import { Icon } from './Icon'
 export function LogoMark({ size = 32 }: { size?: number }) {
   return (
     <svg width={size * 1.5} height={size} viewBox="0 0 72 48" fill="none" aria-hidden="true">
-      <path d="M6 30l6-15c1.4-3.4 3.6-5 7.2-5h23.6c3.6 0 5.8 1.6 7.2 5l6 15" stroke="#7FFF00" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M3 30h66v8a4 4 0 0 1-4 4h-6a4 4 0 0 1-4-4v-2H17v2a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" stroke="#7FFF00" strokeWidth="4" strokeLinejoin="round" />
-      <circle cx="16" cy="29" r="3.2" fill="#7FFF00" />
-      <circle cx="56" cy="29" r="3.2" fill="#7FFF00" />
-      <path d="M26 22h20" stroke="#7FFF00" strokeWidth="3.5" strokeLinecap="round" />
+      <path d="M6 30l6-15c1.4-3.4 3.6-5 7.2-5h23.6c3.6 0 5.8 1.6 7.2 5l6 15" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3 30h66v8a4 4 0 0 1-4 4h-6a4 4 0 0 1-4-4v-2H17v2a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" stroke="currentColor" strokeWidth="4" strokeLinejoin="round" />
+      <circle cx="16" cy="29" r="3.2" fill="currentColor" />
+      <circle cx="56" cy="29" r="3.2" fill="currentColor" />
+      <path d="M26 22h20" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" />
     </svg>
   )
 }
@@ -40,7 +40,7 @@ export function CarArt({ color = '#EEF1EE', style, className }: { color?: string
       </defs>
       <ellipse cx="140" cy="108" rx="112" ry="8" fill="#000" opacity=".5" />
       {/* carroceria */}
-      <path d="M16 82c0-9 4-15 13-18l36-10c9-15 24-25 42-25h30c20 0 34 9 47 24l34 8c11 3 18 10 18 21v7c0 4-3 7-7 7h-13a23 23 0 0 0-46 0H98a23 23 0 0 0-46 0H24c-5 0-8-3-8-8z" fill={`url(#${id}b)`} />
+      <path d="M16 82c0-9 4-15 13-18l36-10c9-15 24-25 42-25h30c20 0 34 9 47 24l34 8c11 3 18 10 18 21v7c0 4-3 7-7 7h-13a23 23 0 0 0-46 0H98a23 23 0 0 0-46 0H24c-5 0-8-3-8-8z" fill={`url(#${id}b)`} stroke="rgba(11,12,13,.28)" strokeWidth="1" />
       {/* vidros */}
       <path d="M86 52c8-12 19-19 33-19h26v19zM152 33h9c13 2 25 10 34 19h-43z" fill={`url(#${id}g)`} />
       <path d="M150 33v19" stroke="#c9d0c9" strokeWidth="2" />

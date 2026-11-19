@@ -24,6 +24,19 @@ export function calculateFare(category: Category, km: number, minutes: number): 
   return round2(Math.max(cfg.minimum, cfg.base + km * cfg.perKm + minutes * cfg.perMinute))
 }
 
+/**
+ * Grade 3×3 de valores para "Seu preço" (simulação): 9 valores consecutivos, em passos fixos
+ * (R$ 0,50 até R$ 25, R$ 1,00 acima), que SEMPRE incluem o preço sugerido e nunca ficam abaixo da
+ * corrida mínima da categoria. Determinística: o mesmo trajeto gera sempre a mesma grade.
+ */
+export function priceOptions(suggested: number, category: Category): number[] {
+  const min = FARE_CONFIG[category].minimum
+  const step = suggested < 25 ? 0.5 : 1
+  const below = Math.min(4, Math.max(0, Math.floor((suggested - min) / step + 1e-9)))
+  const start = round2(suggested - below * step)
+  return Array.from({ length: 9 }, (_, i) => round2(start + i * step))
+}
+
 export interface FareLine {
   label: string
   value: number

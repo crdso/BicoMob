@@ -3,11 +3,12 @@ import { Avatar, CarArt, MotoArt } from '../components/Art'
 import { Icon } from '../components/Icon'
 import MapPanel from '../components/MapPanel'
 import { PlaceIcon, ScreenHeader, Sheet } from '../components/UI'
-import { brl, fareBreakdown, FARE_CONFIG, type Category } from '../lib/fare'
+import { brl, fareBreakdown, FARE_CONFIG, priceOptions, type Category } from '../lib/fare'
 import { describeArea, GEO_MESSAGES, geolocationPermission, getCurrentPosition, GeoError, placeFromMyPos, reverseGeocode, type GeoFailure, type MyPos } from '../lib/geo'
+import { insideArea, MSG_GPS_OUTSIDE, MSG_PLACE_OUTSIDE, MSG_POINT_OUTSIDE } from '../lib/boundary'
 import { normalize, samePlace, type LatLng, type Place } from '../lib/places'
 import { allSourcesFailed, mergePlaces, MIN_CHARS, NOMINATIM_MIN_CHARS, searchNominatim, searchPlaces, type SearchOutcome } from '../lib/search'
-import { useStore, type FavoriteKind, type Ride } from '../store'
+import { DRIVERS, useStore, type FavoriteKind, type Ride } from '../store'
 
 const PAGE = 8
 const DEBOUNCE_MS = 350
@@ -19,7 +20,7 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
   const [q, setQ] = useState('')
   const [typed, setTyped] = useState(false)
   const [outcome, setOutcome] = useState<SearchOutcome | null>(null)
-  // Resultados da busca EXPLÍCITA no OpenStreetMap (Nominatim): só depois de um toque/Enter do usuário.
+  // Resultados da busca EXPLÍCITA: só depois de um toque/Enter do usuário.
   const [extra, setExtra] = useState<Place[]>([])
   const [extraBusy, setExtraBusy] = useState(false)
   const [extraNote, setExtraNote] = useState<string | null>(null)
@@ -29,6 +30,7 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
   const [msg, setMsg] = useState<string | null>(null)
   const [locating, setLocating] = useState(false)
   const [geoError, setGeoError] = useState<GeoFailure | null>(null)
+  const [gpsOutside, setGpsOutside] = useState(false)
   const [picking, setPicking] = useState(false)
   const [picked, setPicked] = useState<{ pos: LatLng; title: string; subtitle: string; checking: boolean } | null>(null)
   const originRef = useRef(origin)
@@ -76,9 +78,9 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
     try {
       const r = await searchNominatim(query, { bias })
       setExtra(r)
-      if (!r.length) setExtraNote('O OpenStreetMap também não encontrou esse endereço. Tente outro nome ou escolha o ponto no mapa.')
+      if (!r.length) setExtraNote('Nenhum endereço encontrado. Tente outro nome ou escolha o ponto no mapa.')
     } catch {
-      setExtraNote('A busca no OpenStreetMap está indisponível agora. Escolha o ponto no mapa.')
+      setExtraNote('Não foi possível buscar agora. Escolha o ponto no mapa.')
     } finally { setExtraBusy(false) }
   }
   const onEnter = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && hasQuery) void searchOnOsm() }
@@ -96,10 +98,12 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
 
   // `chosenDest` evita ler o destino "antigo" quando ele acabou de ser escolhido nesta mesma interação.
   const useMyLocation = async (afterwards: 'continue' | 'stay' = 'stay', chosenDest?: Place) => {
-    setMsg(null); setGeoError(null); setLocating(true)
+    setMsg(null); setGeoError(null); setGpsOutside(false); setLocating(true)
     const target = chosenDest ?? dest
     try {
       const pos = await getCurrentPosition()
+      // Fora do município: não usamos a posição (nem fingimos outra). O usuário escolhe a partida no mapa.
+      if (!insideArea([pos.lat, pos.lng])) { setGpsOutside(true); setFocus('origin'); return }
       const first = adoptPosition(pos)
       if (target && first && samePlace(first, target)) { setMsg('Você já está no destino escolhido.'); return }
       if (target) { if (afterwards === 'continue') proceed() } else setFocus('dest')
@@ -119,7 +123,7 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
       if (state !== 'granted' || !alive) return
       try {
         const pos = await getCurrentPosition()
-        if (alive && !originRef.current) adoptPosition(pos)
+        if (alive && !originRef.current && insideArea([pos.lat, pos.lng])) adoptPosition(pos)
       } catch { /* sem posição: o usuário escolhe a partida */ }
     })
     return () => { alive = false }
@@ -128,6 +132,7 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
 
   const choose = (p: Place) => {
     setMsg(null)
+    if (!insideArea(p.position)) { setMsg(MSG_PLACE_OUTSIDE); return }
     if (pickFavorite) { setProfile({ [pickFavorite]: p }); showToast(pickFavorite === 'home' ? 'Casa atualizada' : 'Trabalho atualizado'); pop(); return }
     const other = focus === 'origin' ? dest : origin
     if (other && samePlace(p, other)) { setMsg('Partida e destino não podem ser o mesmo local.'); return }
@@ -146,6 +151,8 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
   const openPicker = () => { setPicking(true); setPicked(null); setMsg(null) }
 
   const onPick = (pos: LatLng) => {
+    // Validação por polígono: pontos fora do município nunca são aceitos.
+    if (!insideArea(pos)) { setPicked(null); setMsg(MSG_POINT_OUTSIDE); return }
     setMsg(null)
     setPicked({ pos, title: 'Ponto no mapa', subtitle: 'Buscando o endereço…', checking: true })
     reverseGeocode(pos).then((rev) => {
@@ -161,7 +168,11 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
 
   const centerOnMe = async () => {
     setMsg(null)
-    try { setMe(await getCurrentPosition()) } catch (err) { setMsg(GEO_MESSAGES[err instanceof GeoError ? err.kind : 'unavailable']) }
+    try {
+      const pos = await getCurrentPosition()
+      if (!insideArea([pos.lat, pos.lng])) { setMsg(MSG_GPS_OUTSIDE); return }
+      setMe(pos)
+    } catch (err) { setMsg(GEO_MESSAGES[err instanceof GeoError ? err.kind : 'unavailable']) }
   }
 
   const canConfirm = !!dest && !!origin && !samePlace(origin, dest)
@@ -169,14 +180,11 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
 
   /* ---- modo: escolher no mapa ---- */
   if (picking) {
-    const hasContext = !!(me || origin || dest)
     return (
       <div className="flow">
         <ScreenHeader title="Escolher no mapa" onBack={() => { setPicking(false); setPicked(null); setMsg(null) }} />
         <p className="muted pad-x hint">
-          {hasContext
-            ? `Toque no mapa para marcar o ponto de ${pickFavorite ? (pickFavorite === 'home' ? 'Casa' : 'Trabalho') : focus === 'origin' ? 'partida' : 'destino'}.`
-            : 'Aproxime o zoom até o local desejado e toque para marcar. Se preferir, centralize na sua localização.'}
+          Toque no mapa para marcar o ponto de {pickFavorite ? (pickFavorite === 'home' ? 'Casa' : 'Trabalho') : focus === 'origin' ? 'partida' : 'destino'}. Só é possível escolher locais dentro da área destacada.
         </p>
         <MapPanel picking picked={picked?.pos ?? null} onPick={onPick} className="grow-map" origin={origin?.position} dest={dest?.position} me={me} />
         <div className="footer">
@@ -241,9 +249,10 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
           </button>
         )}
         {geoError && <div className="alert-box" role="alert"><Icon name="alert" size={20} /><span>{GEO_MESSAGES[geoError]}</span></div>}
+        {gpsOutside && <div className="alert-box" role="alert"><Icon name="alert" size={20} /><span>{MSG_GPS_OUTSIDE}</span></div>}
         <button className="quick-row" onClick={openPicker}>
           <span className="quick-ic"><Icon name="crosshair" size={22} /></span>
-          <span className="quick-txt"><b>Escolher no mapa</b><small>Toque em qualquer ponto</small></span>
+          <span className="quick-txt"><b>Escolher no mapa</b><small>Toque em um ponto da área disponível</small></span>
           <Icon name="chevron" size={20} className="muted" />
         </button>
         {msg && <p className="error-text pad-x">{msg}</p>}
@@ -310,14 +319,14 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
               <div className="no-results" role="alert">
                 <Icon name="alert" size={30} />
                 <b>Busca indisponível no momento</b>
-                <small>O serviço de sugestões não respondeu a tempo. Tente de novo, busque no OpenStreetMap ou escolha o ponto direto no mapa.</small>
+                <small>Não foi possível carregar as sugestões agora. Tente de novo, busque o endereço ou escolha o ponto direto no mapa.</small>
                 <button className="pill-btn" onClick={() => setRetry((n) => n + 1)}><Icon name="retry" size={18} /> Tentar novamente</button>
               </div>
             )}
             {!searching && !failed && !results.length && (
               <div className="no-results">
                 <Icon name="search" size={30} />
-                <b>Nenhum resultado</b>
+                <b>Nenhum endereço encontrado</b>
                 <small>Não encontramos “{query}”. Tente outro nome ou endereço, ou escolha o ponto no mapa.</small>
               </div>
             )}
@@ -326,7 +335,7 @@ export function SearchScreen({ focus: initialFocus, pickFavorite }: { focus: 'or
               <div className="more-actions">
                 {normalize(query).length >= NOMINATIM_MIN_CHARS && (
                   <button className="pill-btn" onClick={searchOnOsm} disabled={extraBusy}>
-                    <Icon name={extraBusy ? 'loader' : 'search'} size={18} className={extraBusy ? 'spin' : ''} /> Buscar no OpenStreetMap
+                    <Icon name={extraBusy ? 'loader' : 'search'} size={18} className={extraBusy ? 'spin' : ''} /> Buscar endereço
                   </button>
                 )}
                 {(failed || !results.length) && (
@@ -358,18 +367,39 @@ function PlaceRow({ p, onClick }: { p: Place; onClick: () => void }) {
   )
 }
 
-/* ------------------------------ Confirmar / preço ------------------------------ */
+/* ------------------------------ Opções de viagem (rota, preços e escolha) ------------------------------ */
+function OptionCard({ selected, onClick, art, title, sub, price }: { selected: boolean; onClick: () => void; art: JSX.Element; title: string; sub: JSX.Element; price: JSX.Element }) {
+  return (
+    <button className={`opt ${selected ? 'sel' : ''}`} onClick={onClick} aria-pressed={selected}>
+      <span className="opt-art">{art}</span>
+      <span className="opt-txt"><b>{title}</b><small>{sub}</small></span>
+      <span className="opt-price">{price}</span>
+    </button>
+  )
+}
+
+const seats = (n: number) => <span className="opt-seats"><Icon name="users" size={14} /> até {n} passageiro{n > 1 ? 's' : ''}</span>
+
 export function ConfirmScreen() {
-  const { origin, dest, me, route, loadRoute, prices, category, setCategory, pop, push, requestRide, swap } = useStore()
+  const { origin, dest, me, route, loadRoute, prices, category, customFare, chosenFare, chooseOption, pop, push, requestRide, swap } = useStore()
   const [showBreak, setShowBreak] = useState(false)
 
   useEffect(() => { if (dest && origin && route.state === 'idle') loadRoute() }, [dest, origin, route.state, loadRoute])
 
   if (!dest || !origin) {
     return (
-      <div className="flow"><ScreenHeader title="Confirmar trajeto" onBack={pop} />
+      <div className="flow"><ScreenHeader title="Sua viagem" onBack={pop} />
         <div className="empty"><Icon name="pin-fill" size={40} /><b>Escolha partida e destino</b>
           <button className="cta" onClick={() => push({ k: 'search', focus: origin ? 'dest' : 'origin' })}>{origin ? 'Para onde?' : 'Definir partida'}</button></div></div>
+    )
+  }
+
+  if (route.state === 'blocked') {
+    return (
+      <div className="flow"><ScreenHeader title="Sua viagem" onBack={pop} />
+        <div className="empty"><Icon name="alert" size={40} /><b>Fora da área disponível</b>
+          <small>{MSG_PLACE_OUTSIDE}</small>
+          <button className="cta" onClick={() => push({ k: 'search', focus: 'dest' })}>Alterar trajeto</button></div></div>
     )
   }
 
@@ -378,60 +408,61 @@ export function ConfirmScreen() {
   const est = data?.source === 'estimate'
   const eta = data ? Math.round(data.minutes) : 0
   const label = category === 'moto' ? 'Moto' : 'Carro'
-
-  const card = (c: Category, name: string, desc: string, art: JSX.Element) => (
-    <button className={`fare-card ${category === c ? 'sel' : ''}`} onClick={() => setCategory(c)} aria-pressed={category === c}>
-      <span className="fare-art">{art}</span>
-      <span className="fare-txt"><b>{name}</b><small>{desc}</small>{ready && <small>{eta} min</small>}</span>
-      <b className="fare-price">{prices ? brl(prices[c]) : '—'}</b>
-    </button>
-  )
+  const canRequest = ready && !!category && chosenFare != null
+  const priceOf = (c: Category) => (prices ? <>{brl(prices[c])}</> : <span className="opt-wait">—</span>)
 
   return (
-    <div className="flow">
-      <ScreenHeader title="Confirmar trajeto" onBack={pop} />
-      <div className="scroll">
-        <div className="addr-pair static">
+    <div className="flow trip">
+      <div className="trip-map">
+        <MapPanel origin={origin.position} dest={dest.position} route={data?.coords} routeIsEstimate={est} me={me} className="map-trip" />
+        <button className="icon-btn trip-back" aria-label="Voltar" onClick={pop}><Icon name="back" size={22} /></button>
+        <div className="trip-route">
           <div className="addr-dots"><i className="dot-o" /><i className="line" /><i className="dot-d" /></div>
           <div className="addr-fields">
             <button className="addr-btn" onClick={() => push({ k: 'search', focus: 'origin' })}>{origin.title}</button>
             <button className="addr-btn" onClick={() => push({ k: 'search', focus: 'dest' })}>{dest.title}</button>
           </div>
-          <button className="icon-btn" aria-label="Inverter partida e destino" onClick={swap}><Icon name="swap" size={22} /></button>
+          <button className="icon-btn small" aria-label="Inverter partida e destino" onClick={swap}><Icon name="swap" size={20} /></button>
         </div>
+        <div className="trip-stats">
+          {ready ? (
+            <>
+              <span><Icon name="route" size={16} /> {data!.km.toFixed(1).replace('.', ',')} km</span>
+              <i />
+              <span><Icon name="clock" size={16} /> {eta} min</span>
+            </>
+          ) : (
+            <span><Icon name="loader" size={16} className="spin" /> Calculando rota…</span>
+          )}
+        </div>
+      </div>
 
-        <MapPanel origin={origin.position} dest={dest.position} route={data?.coords} routeIsEstimate={est} me={me} className="map-confirm" />
-
-        {route.state === 'loading' || route.state === 'idle' ? (
-          <div className="stats"><Icon name="loader" size={20} className="spin" /> Calculando rota…</div>
-        ) : (
-          <>
-            <div className="stats">
-              <span><Icon name="route" size={20} className="primary" /> {data!.km.toFixed(1).replace('.', ',')} km</span><i />
-              <span><Icon name="clock" size={20} className="primary" /> {eta} min</span>
-            </div>
-            <p className="muted tiny pad-x">
-              {est
-                ? 'Rota de demonstração — o serviço de rotas está indisponível. A distância é uma estimativa em linha reta (×1,3) e a linha tracejada não é um percurso por ruas.'
-                : 'Distância e tempo estimados pelo serviço de rotas (OSRM). Podem variar.'}
-            </p>
-            {est && <button className="link pad-x" onClick={loadRoute}>Tentar a rota novamente</button>}
-          </>
+      <div className="trip-sheet">
+        <div className="sheet-handle" />
+        <h2>Escolha sua viagem</h2>
+        {est && (
+          <p className="trip-note">
+            Não foi possível calcular o percurso por ruas agora; mostrando uma estimativa. <button className="link inline" onClick={loadRoute}>Tentar novamente</button>
+          </p>
         )}
-
-        <h2 className="section-title">Escolha sua viagem</h2>
-        {card('moto', 'Moto', 'Mais rápida', <MotoArt />)}
-        {card('carro', 'Carro', 'Mais conforto', <CarArt />)}
-        {ready && <button className="link pad-x" onClick={() => setShowBreak(true)}>Como esse preço foi calculado?</button>}
-        <p className="notice"><Icon name="info" size={18} /><span>Tarifa mínima: Moto {brl(FARE_CONFIG.moto.minimum)} • Carro {brl(FARE_CONFIG.carro.minimum)}. Valores simulados para demonstração; nenhuma corrida real é solicitada.</span></p>
+        <div className="trip-options">
+          <OptionCard selected={category === 'moto' && customFare == null} onClick={() => chooseOption('moto')} art={<MotoArt />}
+            title="BicoMob Moto" sub={<>Chega em {DRIVERS.moto.etaMin} min · {seats(1)}</>} price={priceOf('moto')} />
+          <OptionCard selected={category === 'carro' && customFare == null} onClick={() => chooseOption('carro')} art={<CarArt />}
+            title="BicoMob Carro" sub={<>Chega em {DRIVERS.carro.etaMin} min · {seats(4)}</>} price={priceOf('carro')} />
+          <OptionCard selected={customFare != null} onClick={() => ready && push({ k: 'price' })} art={<span className="opt-icon"><Icon name="tag" size={30} /></span>}
+            title="Seu preço" sub={customFare != null ? <>{category === 'moto' ? 'BicoMob Moto' : 'BicoMob Carro'} · valor definido por você</> : <>Defina quanto quer pagar</>}
+            price={customFare != null ? <>{brl(customFare)}</> : <Icon name="chevron" size={22} className="muted" />} />
+        </div>
+        {ready && category && customFare == null && <button className="link pad-x" onClick={() => setShowBreak(true)}>Como esse preço foi calculado?</button>}
+        <p className="trip-fine">Valores simulados para demonstração. Nenhuma corrida real é solicitada.</p>
+        <div className="trip-cta">
+          <button className="cta" disabled={!canRequest} onClick={requestRide}>Solicitar BicoMob</button>
+          {!category && ready && <small className="trip-pick">Escolha uma opção para continuar</small>}
+        </div>
       </div>
-      <div className="footer">
-        <button className="cta" disabled={!ready} onClick={requestRide}>
-          {ready ? `Solicitar ${label} • ${brl(prices![category])}` : 'Calculando…'}
-        </button>
-      </div>
 
-      {showBreak && data && (
+      {showBreak && data && category && (
         <Sheet title={`Preço — ${label}`} onClose={() => setShowBreak(false)}>
           <ul className="break">
             {fareBreakdown(category, data.km, data.minutes).map((l) => (
@@ -442,6 +473,60 @@ export function ConfirmScreen() {
           <p className="muted tiny">preço = max(mínima, base + km × R$/km + min × R$/min). Arredondado só no total.</p>
         </Sheet>
       )}
+    </div>
+  )
+}
+
+/* ------------------------------ Seu preço (simulação) ------------------------------ */
+export function PriceScreen() {
+  const { origin, dest, route, prices, category, customFare, chooseCustomFare, pop } = useStore()
+  const [vehicle, setVehicle] = useState<Category>(category ?? 'moto')
+  const suggested = prices ? prices[vehicle] : 0
+  const options = useMemo(() => (prices ? priceOptions(suggested, vehicle) : []), [prices, suggested, vehicle])
+  const [value, setValue] = useState<number | null>(customFare)
+  const current = value != null && options.includes(value) ? value : suggested
+
+  if (route.state !== 'ready' || !prices || !origin || !dest) {
+    return <div className="flow"><ScreenHeader title="Seu preço" onBack={pop} /><div className="empty"><Icon name="loader" size={36} className="spin" /><b>Calcule a rota primeiro</b></div></div>
+  }
+  const data = route.data
+
+  return (
+    <div className="flow">
+      <ScreenHeader title="Seu preço" onBack={pop} />
+      <div className="scroll pad price-screen">
+        <div className="seg" role="group" aria-label="Tipo de veículo">
+          {(['moto', 'carro'] as const).map((v) => (
+            <button key={v} className={vehicle === v ? 'on' : ''} aria-pressed={vehicle === v} onClick={() => { setVehicle(v); setValue(null) }}>
+              {v === 'moto' ? 'BicoMob Moto' : 'BicoMob Carro'}
+            </button>
+          ))}
+        </div>
+
+        <div className="suggested">
+          <small>Preço sugerido</small>
+          <b>{brl(suggested)}</b>
+          <small>Mínimo da corrida: {brl(FARE_CONFIG[vehicle].minimum)}</small>
+        </div>
+
+        <div className="price-grid" role="group" aria-label="Valores">
+          {options.map((p) => (
+            <button key={p} className={`pcell ${p === current ? 'sel' : ''} ${p === suggested ? 'sug' : ''}`} aria-pressed={p === current} onClick={() => setValue(p)}>
+              {brl(p)}
+            </button>
+          ))}
+        </div>
+
+        <div className="summary">
+          <div className="addr-dots"><i className="dot-o" /><i className="line" /><i className="dot-d" /></div>
+          <div className="sum-txt"><b>{origin.title}</b><b>{dest.title}</b></div>
+          <div className="sum-meta"><span>{data.km.toFixed(1).replace('.', ',')} km</span><span>{Math.round(data.minutes)} min</span></div>
+        </div>
+        <p className="trip-fine">Simulação: nenhum motorista real receberá ofertas.</p>
+      </div>
+      <div className="footer">
+        <button className="cta" onClick={() => { chooseCustomFare(vehicle, current); pop() }}>Confirmar valor • {brl(current)}</button>
+      </div>
     </div>
   )
 }
@@ -536,7 +621,7 @@ export function RideScreen() {
             <div className="driver">
               <Avatar name={ride.driver.name} size={58} />
               <div className="grow"><b>{ride.driver.name}</b><span className="rating"><Icon name="star" size={14} /> {ride.driver.rating.toFixed(1).replace('.', ',')}</span></div>
-              <b className="fare-price">{brl(ride.fare)}</b>
+              <span className="fare-col"><b className="fare-price">{brl(ride.fare)}</b>{ride.custom && <small>Seu preço</small>}</span>
             </div>
             <div className="vehicle">
               {ride.category === 'moto' ? <MotoArt className="v-art" /> : <CarArt className="v-art" />}
@@ -590,7 +675,8 @@ function RideLines({ r }: { r: Ride }) {
     <ul className="break">
       <li><span>Partida</span><b>{r.origin.title}</b></li>
       <li><span>Destino</span><b>{r.dest.title}</b></li>
-      <li><span>Categoria</span><b>{r.category === 'moto' ? 'Moto' : 'Carro'}</b></li>
+      <li><span>Categoria</span><b>{r.category === 'moto' ? 'BicoMob Moto' : 'BicoMob Carro'}</b></li>
+      {r.custom && <li><span>Valor</span><b>Definido por você</b></li>}
       <li><span>Distância</span><b>{r.km.toFixed(1).replace('.', ',')} km{r.routeSource === 'estimate' ? ' (estimada)' : ''}</b></li>
       <li><span>Duração</span><b>{Math.round(r.minutes)} min</b></li>
       <li><span>Data</span><b>{dt(r.createdAt)}</b></li>

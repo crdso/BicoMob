@@ -67,5 +67,10 @@
   "star-line": "solar:star-linear",
   "calendar": "solar:calendar-linear",
   "box": "solar:box-linear",
-  "retry": "solar:restart-linear"
+  "retry": "solar:restart-linear",
+  "sun": "solar:sun-2-linear",
+  "moon-fill": "solar:moon-bold",
+  "sun-fill": "solar:sun-2-bold",
+  "tag": "solar:tag-price-linear",
+  "users": "solar:users-group-rounded-linear"
 }

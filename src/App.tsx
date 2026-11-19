@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Icon, type IconName } from './components/Icon'
 import { AppHeader, ScreenHeader, Toast } from './components/UI'
-import { ActivityDetail, ConfirmScreen, ReceiptScreen, RideScreen, SearchScreen } from './screens/Flow'
+import { ActivityDetail, ConfirmScreen, PriceScreen, ReceiptScreen, RideScreen, SearchScreen } from './screens/Flow'
 import { Account, AccountSubScreen, Activity, Home, Services, Welcome } from './screens/Tabs'
 import { useStore, type AccountSub, type Screen, type Tab } from './store'
 
@@ -36,11 +36,24 @@ function useStageScale() {
   return scale
 }
 
+// Indicador de sinal (puramente visual): quatro barras ascendentes, como no iPhone.
+function SignalBars() {
+  return (
+    <svg className="signal" width="18" height="12" viewBox="0 0 18 12" aria-hidden="true">
+      <rect x="0" y="8" width="3" height="4" rx="1" />
+      <rect x="5" y="5.5" width="3" height="6.5" rx="1" />
+      <rect x="10" y="3" width="3" height="9" rx="1" />
+      <rect x="15" y="0" width="3" height="12" rx="1" />
+    </svg>
+  )
+}
+
 function Overlay({ s }: { s: Screen }) {
   const { pop } = useStore()
   switch (s.k) {
     case 'search': return <SearchScreen focus={s.focus} pickFavorite={s.pickFavorite} />
     case 'confirm': return <ConfirmScreen />
+    case 'price': return <PriceScreen />
     case 'ride': return <RideScreen />
     case 'receipt': return <ReceiptScreen id={s.id} />
     case 'activity-detail': return <ActivityDetail id={s.id} />
@@ -51,9 +64,9 @@ function Overlay({ s }: { s: Screen }) {
 }
 
 export default function App() {
-  const { logged, tab, setTab, stack, toast, profile } = useStore()
+  const { logged, tab, setTab, stack, toast, theme } = useStore()
   const scale = useStageScale()
-  useEffect(() => { document.documentElement.dataset.theme = profile.theme }, [profile.theme])
+  useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
 
   const top = stack[stack.length - 1]
   const current = TABS.find((t) => t.id === tab)!
@@ -64,7 +77,7 @@ export default function App() {
         <div className="phone">
           <div className="phone-notch" aria-hidden="true" />
           <div className="phone-screen">
-            <div className="statusbar" aria-hidden="true"><span>{new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span><span className="status-right"><Icon name="gps" size={14} /> 5G</span></div>
+            <div className="statusbar" aria-hidden="true"><span>{new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span><span className="status-right"><SignalBars /> 5G</span></div>
             {!logged ? (
               <Welcome />
             ) : top ? (

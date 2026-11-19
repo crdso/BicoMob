@@ -1,15 +1,14 @@
-import { useEffect } from 'react'
-import { Circle, MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet'
+import { useEffect, useMemo, useState } from 'react'
+import { AttributionControl, Circle, MapContainer, Marker, Polygon, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { AREA_BBOX, AREA_CENTER, areaOutline } from '../lib/boundary'
 import type { MyPos } from '../lib/geo'
 import type { LatLng } from '../lib/places'
 import { iconHtml } from './Icon'
 
-// Sem posição conhecida o mapa abre numa visão geral do mundo; assim que há GPS, origem, destino
-// ou um resultado de busca, ele centraliza ali. Nenhuma cidade é assumida.
-const WORLD_CENTER: LatLng = [15, 0]
-const WORLD_ZOOM = 2
+// O mapa abre centralizado na área da demonstração; a navegação fica limitada a ela (e arredores).
+const MAP_ZOOM = 14
 
 function divIcon(cls: string, html = '', size = 28) {
   return L.divIcon({ className: '', html: `<div class="${cls}">${html}</div>`, iconSize: [size, size], iconAnchor: [size / 2, size / 2] })
@@ -63,21 +62,40 @@ export default function MapPanel(p: MapPanelProps) {
   const pts: LatLng[] = [p.origin, p.dest].filter(Boolean) as LatLng[]
   const mePt: LatLng | null = p.me ? [p.me.lat, p.me.lng] : null
   let fitPts: LatLng[]
-  if (p.picking && p.picked) fitPts = [p.picked]
-  else if (pts.length) fitPts = pts
+  // Ao escolher um ponto o enquadramento fica parado (não "pula" a cada toque).
+  if (pts.length) fitPts = pts
   else if (mePt) fitPts = [mePt]
   else fitPts = []
 
+  const [s0, w0, n0, e0] = AREA_BBOX
+  const outline = useMemo(() => (p.picking ? areaOutline() : []), [p.picking])
+  const [tileErrors, setTileErrors] = useState(0)
+  const [tileOk, setTileOk] = useState(false)
+
   return (
     <div className={`map-wrap ${p.picking ? 'picking' : ''} ${p.className ?? ''}`}>
-      <MapContainer center={WORLD_CENTER} zoom={WORLD_ZOOM} minZoom={2} worldCopyJump zoomControl attributionControl className="map">
+      <MapContainer
+        center={AREA_CENTER}
+        zoom={MAP_ZOOM}
+        minZoom={11}
+        maxBounds={[[s0 - 0.03, w0 - 0.03], [n0 + 0.03, e0 + 0.03]]}
+        maxBoundsViscosity={0.9}
+        zoomControl
+        attributionControl={false}
+        className="map"
+      >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           maxZoom={19}
+          eventHandlers={{ tileerror: () => setTileErrors((n) => n + 1), tileload: () => setTileOk(true) }}
         />
+        <AttributionControl prefix={false} />
         <Fit points={fitPts} zoomTo={15} />
         {p.picking && p.onPick && <Picker onPick={p.onPick} />}
+        {outline.map((ring, i) => (
+          <Polygon key={i} positions={ring} interactive={false} pathOptions={{ color: '#7FFF00', weight: 2.5, dashArray: '6 8', fillOpacity: 0.04, opacity: 0.9 }} />
+        ))}
         {p.route && p.route.length > 1 && (
           <Polyline
             positions={p.route}
@@ -95,6 +113,7 @@ export default function MapPanel(p: MapPanelProps) {
         )}
         {p.vehicle && <Marker position={p.vehicle} icon={p.vehicleKind === 'moto' ? motoIcon : carIcon} zIndexOffset={500} />}
       </MapContainer>
+      {!tileOk && tileErrors >= 3 && <div className="map-error" role="alert">Não foi possível carregar o mapa</div>}
     </div>
   )
 }

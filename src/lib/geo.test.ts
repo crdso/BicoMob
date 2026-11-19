@@ -7,7 +7,7 @@ describe('localização atual (nunca inventada)', () => {
   it('monta a origem a partir da posição real e do nome da rua', () => {
     const p = placeFromMyPos({ lat: -23.5614, lng: -46.6559, accuracy: 18.4 }, { road: 'Avenida Paulista', suburb: 'Consolação', city: 'São Paulo', state: 'São Paulo' })
     expect(p).toMatchObject({ id: 'gps', title: 'Avenida Paulista', position: [-23.5614, -46.6559], icon: 'gps-fill' })
-    expect(p.subtitle).toContain('Consolação, São Paulo')
+    expect(p.subtitle).toContain('Consolação')
     expect(p.subtitle).toContain('±18 m')
   })
 
@@ -18,7 +18,8 @@ describe('localização atual (nunca inventada)', () => {
   })
 
   it('descreve a área em qualquer país', () => {
-    expect(describeArea({ suburb: 'Shibuya', city: 'Tóquio' })).toBe('Shibuya, Tóquio')
+    expect(describeArea({ suburb: 'Shibuya', city: 'Tóquio' })).toBe('Shibuya')
+    expect(describeArea({ city: 'Tóquio' })).toBe('Tóquio')
     expect(describeArea(null)).toBe('')
   })
 

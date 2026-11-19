@@ -1,5 +1,5 @@
 import { fetchWithTimeout, throttled, TtlCache } from './net'
-import { normalize, type LatLng, type Place } from './places'
+import type { LatLng, Place } from './places'
 
 // Localização REAL do usuário via API nativa do navegador. A posição fica só em memória:
 // não é gravada no localStorage nem enviada a nenhum serviço, exceto a geocodificação reversa
@@ -85,12 +85,9 @@ export interface ReverseResult {
   state?: string
 }
 
-/** "Bairro, Cidade, Estado" a partir de um resultado de geocodificação reversa. */
+/** Bairro (ou cidade, se não houver) a partir de um resultado de geocodificação reversa. */
 export function describeArea(rev: ReverseResult | null): string {
-  const seen = new Set<string>()
-  return [rev?.suburb, rev?.city, rev?.state]
-    .filter((p): p is string => !!p && !seen.has(normalize(p)) && !!seen.add(normalize(p)))
-    .join(', ')
+  return rev?.suburb ?? rev?.city ?? ''
 }
 
 const revCache = new TtlCache<ReverseResult | null>(30 * 60 * 1000, 60)
